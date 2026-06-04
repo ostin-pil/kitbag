@@ -12,6 +12,22 @@
 #   - workflow bundles  (web, ios, android, python, data, security, testing...)
 #   - curator bundles   (essentials, claude-authoring, karpathy — opinionated picks)
 
+# Standalone MCP servers — arbitrary endpoints with no marketplace catalog, so
+# their full definition lives here and bundles reference them by name (under `mcp:`).
+#   transport: stdio (default) -> needs `command` (+ optional `args`, `env`)
+#   transport: http | sse      -> needs `url`     (+ optional `headers`)
+# Add with:  claude-tools mcp add <name>     (defaults to --scope user)
+mcp_servers:
+  sentry:
+    transport: http
+    url: https://mcp.sentry.dev/mcp
+  # Example stdio server (uncomment & adapt):
+  # my-server:
+  #   transport: stdio
+  #   command: npx
+  #   args: ["-y", "@scope/my-mcp"]
+  #   env: ["API_KEY=replace-me"]
+
 bundles:
   # ---- foundation -----------------------------------------------------------
   essentials:
@@ -71,6 +87,11 @@ bundles:
   testing:
     description: Test & browser automation
     plugins: [playwright, chrome-devtools-mcp, codspeed]
+
+  observability:
+    description: Error monitoring & observability (plugin + standalone MCP)
+    plugins: [security-guidance]
+    mcp: [sentry]
   quality:
     description: Code review, simplification & PR hygiene
     plugins: [code-review, code-simplifier, pr-review-toolkit, security-guidance]

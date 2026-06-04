@@ -40,11 +40,18 @@ claude-tools status                            # installed/enabled + always-on t
 claude-tools eval                              # per-plugin token cost of the enabled set
 claude-tools list --enabled
 
-# bundles (curated, shareable sets)
+# standalone MCP servers (registry in bundles.yaml)
+claude-tools mcp list                          # registry + already-configured servers
+claude-tools mcp info sentry
+claude-tools mcp add sentry                    # -> claude mcp add ... (--scope user)
+claude-tools mcp remove sentry
+claude-tools mcp add <name> --dry-run
+
+# bundles (curated, shareable sets of plugins AND mcp servers)
 claude-tools bundle list
-claude-tools bundle show web
+claude-tools bundle show observability
 claude-tools bundle diff web                   # installed vs bundle
-claude-tools bundle install web                # installs only what's missing
+claude-tools bundle install web                # installs only what's missing (plugins + mcp)
 claude-tools bundle remove web
 
 # maintenance
@@ -77,21 +84,48 @@ Seeded bundles: `essentials`, `web`, `ios`, `android`, `mobile`, `typescript`,
 
 Point the tool at a different manifest with `CLAUDE_TOOLS_BUNDLES=/path/to/file.yaml`.
 
+## Standalone MCP servers
+
+MCP servers have no marketplace catalog, so the manifest carries an `mcp_servers:`
+**registry** and bundles reference servers by name under an `mcp:` key:
+
+```yaml
+mcp_servers:
+  sentry:                       # http/sse -> url (+ optional headers)
+    transport: http
+    url: https://mcp.sentry.dev/mcp
+  my-server:                    # stdio (default) -> command (+ optional args/env)
+    transport: stdio
+    command: npx
+    args: ["-y", "@scope/my-mcp"]
+    env: ["API_KEY=replace-me"]
+
+bundles:
+  observability:
+    plugins: [security-guidance]
+    mcp: [sentry]               # pulled in by `bundle install observability`
+```
+
+`mcp add/remove` wrap `claude mcp add/remove` at `--scope user` by default
+(`--scope local|project` to override). `bundle install/remove/diff/show` handle
+plugins and MCP servers together. Plugin-provided MCP servers (the `plugin:…`
+entries in `claude mcp list`) are managed via their plugin and ignored here.
+
 ## Architecture
 
 | Concern        | Source                                              |
 |----------------|-----------------------------------------------------|
 | explore / eval | `~/.claude/plugins/plugin-catalog-cache.json` (offline) |
-| install state  | `~/.claude/settings.json`, `installed_plugins.json` |
-| actions        | `claude plugin install/uninstall/enable/disable`, `marketplace update` |
+| plugin state   | `~/.claude/settings.json`, `installed_plugins.json` |
+| mcp state      | `claude mcp list` (parsed; `plugin:`-prefixed excluded) |
+| actions        | `claude plugin …`, `claude mcp add/remove`, `marketplace update` |
 
 ## Scope & roadmap
 
 In Claude Code the **plugin** is the installable unit — it bundles skills, commands,
-agents, hooks, MCP, and LSP servers — so v1 manages plugins (covering all of those
-transitively). Natural extensions, designed for but not yet wired:
+agents, hooks, MCP, and LSP servers — and standalone **MCP servers** are now wired in
+too (registry + bundle `mcp:` keys). Remaining extension, not yet wired:
 
-- standalone **MCP servers** via `claude mcp add/remove` (add an `mcp:` key per bundle)
 - local file-based **skills/commands/agents/rules** discovery & scaffolding
 
-The bundle format already leaves room for these; contributions welcome.
+The manifest format leaves room for these; contributions welcome.

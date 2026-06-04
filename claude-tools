@@ -156,7 +156,7 @@ def _run(argv, dry):
     if dry: return 0
     return subprocess.call(argv)
 
-def _act(cat, names, verb, dry):
+def _act(cat, names, verb, dry, note=True):
     recs = _resolve(cat, names)
     rc = 0
     for r in recs:
@@ -167,7 +167,7 @@ def _act(cat, names, verb, dry):
         else:  # enable / disable
             argv = ["claude", "plugin", verb, r["name"]]
         rc |= _run(argv, dry)
-    if not dry:
+    if note and not dry:
         print(f"\n{DIM}you may need /reload-plugins (or restart) for changes to load.{RST}")
     return rc
 
@@ -202,81 +202,193 @@ def cmd_eval(cat, a):
     print(f"  {BOLD}{'TOTAL':<26}{total_ao:>11}{fmt_k(total_oi):>11}{RST}")
     print(f"\n  {DIM}always-on is added to EVERY session; on-invoke is paid per fire.{RST}")
 
-# ---- bundles -----------------------------------------------------------------
-def load_bundles():
+# ---- manifest (bundles + standalone MCP registry) ---------------------------
+def load_manifest():
     if not BUNDLES.exists():
         die(f"no bundle manifest at {BUNDLES}")
     try:
         import yaml
-        data = yaml.safe_load(BUNDLES.read_text()) or {}
     except ImportError:
-        die("PyYAML not available; install it or set $CLAUDE_TOOLS_BUNDLES to a .json file")
-    return data.get("bundles", {})
+        die("PyYAML not available; install it (pip install pyyaml)")
+    return yaml.safe_load(BUNDLES.read_text()) or {}
+
+def load_bundles(): return load_manifest().get("bundles", {})
+def mcp_registry(): return load_manifest().get("mcp_servers", {})
 
 def resolve_bundle(bundles, name, seen=None):
-    """Flatten a bundle to a plugin-name list, following `include:`."""
+    """Flatten a bundle to {'plugins': [...], 'mcp': [...]}, following `include:`."""
     seen = seen or set()
-    if name in seen: return []
+    if name in seen: return {"plugins": [], "mcp": []}
     seen.add(name)
     b = bundles.get(name) or die(f"unknown bundle '{name}' (try: claude-tools bundle list)")
-    plugins = list(b.get("plugins", []))
+    plugins, mcp = list(b.get("plugins", [])), list(b.get("mcp", []))
     for inc in b.get("include", []):
-        plugins += resolve_bundle(bundles, inc, seen)
-    out = []
-    for p in plugins:
-        if p not in out: out.append(p)
-    return out
+        sub = resolve_bundle(bundles, inc, seen)
+        plugins += sub["plugins"]; mcp += sub["mcp"]
+    dedupe = lambda xs: list(dict.fromkeys(xs))
+    return {"plugins": dedupe(plugins), "mcp": dedupe(mcp)}
 
+# ---- standalone MCP servers --------------------------------------------------
+_mcp_cache = None
+def configured_mcp_names():
+    """Names of MCP servers already configured (any scope). Plugin-provided
+    servers are 'plugin:'-prefixed and excluded — those are managed via plugins."""
+    global _mcp_cache
+    if _mcp_cache is not None: return _mcp_cache
+    names = set()
+    try:
+        out = subprocess.run(["claude", "mcp", "list"], capture_output=True,
+                             text=True, timeout=60).stdout
+        for line in out.splitlines():
+            line = line.strip()
+            if not line or ": " not in line or line.startswith("plugin:"):
+                continue
+            if line.lower().startswith(("checking", "no mcp")):
+                continue
+            names.add(line.split(": ", 1)[0].strip())
+    except Exception:
+        pass
+    _mcp_cache = names
+    return names
+
+def mcp_add_argv(name, defn, scope="user"):
+    t = (defn.get("transport") or "stdio").lower()
+    argv = ["claude", "mcp", "add", "-s", scope]
+    if t in ("http", "sse"):
+        argv += ["--transport", t]
+        for h in defn.get("headers", []): argv += ["-H", h]
+        url = defn.get("url") or die(f"mcp '{name}': {t} transport needs a 'url'")
+        argv += [name, url]
+    else:
+        for e in defn.get("env", []): argv += ["-e", e]
+        cmd = defn.get("command") or die(f"mcp '{name}': stdio transport needs a 'command'")
+        argv += [name, "--", cmd] + list(defn.get("args", []))
+    return argv
+
+def _mcp_act(names, verb, dry, reg, scope="user"):
+    rc = 0
+    for n in names:
+        if verb == "add":
+            d = reg.get(n) or die(f"unknown mcp server '{n}' — define it under "
+                                  f"mcp_servers in {BUNDLES}")
+            argv = mcp_add_argv(n, d, scope)
+        else:
+            argv = ["claude", "mcp", "remove", "-s", scope, n]
+        rc |= _run(argv, dry)
+    return rc
+
+def _mcp_tag(name, configured): return f"{GRN}●{RST}" if name in configured else f"{DIM}○{RST}"
+
+def cmd_mcp_list(cat, a):
+    reg, configured = mcp_registry(), configured_mcp_names()
+    print(f"{BOLD}MCP registry{RST}  {DIM}({len(reg)} defined in {BUNDLES.name}){RST}\n")
+    for name, d in reg.items():
+        t = (d.get("transport") or "stdio")
+        target = d.get("url") or " ".join([d.get("command", "")] + list(d.get("args", [])))
+        print(f" {_mcp_tag(name, configured)} {BOLD}{name:<20}{RST} {DIM}{t:<5}{RST} {target[:48]}")
+    extra = [n for n in sorted(configured) if n not in reg]
+    if extra:
+        print(f"\n {DIM}also configured (not in registry): {', '.join(extra)}{RST}")
+    print(f"\n{DIM}● configured  ○ not yet   add: claude-tools mcp add <name>{RST}")
+
+def cmd_mcp_add(cat, a): sys.exit(_mcp_act(a.names, "add", a.dry_run, mcp_registry(), a.scope))
+def cmd_mcp_remove(cat, a): sys.exit(_mcp_act(a.names, "remove", a.dry_run, mcp_registry(), a.scope))
+
+def cmd_mcp_info(cat, a):
+    d = mcp_registry().get(a.name) or die(f"unknown mcp server '{a.name}'")
+    state = "configured" if a.name in configured_mcp_names() else "not configured"
+    print(f"{BOLD}{a.name}{RST}  {DIM}({state}){RST}")
+    for k, v in d.items(): print(f"  {DIM}{k}:{RST} {v}")
+    print(f"\n{DIM}would run:{RST} {' '.join(mcp_add_argv(a.name, d, a.scope if hasattr(a,'scope') else 'user'))}")
+
+# ---- bundles -----------------------------------------------------------------
 def cmd_bundle_list(cat, a):
     bundles = load_bundles()
+    configured = None
     print(f"{BOLD}{len(bundles)} bundle(s){RST}  {DIM}from {BUNDLES}{RST}\n")
     for name, b in bundles.items():
-        plugins = resolve_bundle(bundles, name)
-        n_on = sum(1 for p in plugins if cat.is_enabled(p))
-        print(f"  {BOLD}{name:<16}{RST} {DIM}{len(plugins):>2} plugins, {n_on} active{RST}  "
-              f"{b.get('description','')[:50]}")
+        res = resolve_bundle(bundles, name)
+        np, nm = len(res["plugins"]), len(res["mcp"])
+        if nm and configured is None: configured = configured_mcp_names()
+        active = sum(1 for p in res["plugins"] if cat.is_enabled(p))
+        active += sum(1 for m in res["mcp"] if m in (configured or set()))
+        mcp_s = f"+{nm}m" if nm else ""
+        print(f"  {BOLD}{name:<16}{RST} {DIM}{np}p{mcp_s:<3} {active} active{RST}  "
+              f"{b.get('description','')[:48]}")
     print(f"\n{DIM}see one: claude-tools bundle show <name>{RST}")
 
 def cmd_bundle_show(cat, a):
     bundles = load_bundles()
-    plugins = resolve_bundle(bundles, a.name)
+    res = resolve_bundle(bundles, a.name)
     b = bundles[a.name]
     print(f"{BOLD}{a.name}{RST}  {DIM}{b.get('description','')}{RST}")
     if b.get("include"): print(f"  {DIM}includes:{RST} {', '.join(b['include'])}")
     print()
-    recs = [cat.get(p) for p in plugins]
-    missing = [p for p, r in zip(plugins, recs) if r is None]
+    recs = [cat.get(p) for p in res["plugins"]]
+    missing = [p for p, r in zip(res["plugins"], recs) if r is None]
     print_rows(cat, [r for r in recs if r])
     if missing: print(f" {RED}not in catalog:{RST} {', '.join(missing)}")
+    if res["mcp"]:
+        reg, configured = mcp_registry(), configured_mcp_names()
+        print(f"\n {DIM}MCP servers:{RST}")
+        for m in res["mcp"]:
+            d = reg.get(m, {})
+            t = d.get("transport") or "stdio"
+            print(f" {_mcp_tag(m, configured)} {BOLD}{m:<20}{RST} {DIM}{t}{RST}"
+                  + ("" if m in reg else f"  {RED}(not in registry){RST}"))
     print(); print(LEGEND)
 
 def cmd_bundle_diff(cat, a):
     bundles = load_bundles()
-    plugins = resolve_bundle(bundles, a.name)
-    missing = [p for p in plugins if not cat.is_installed(p)]
-    present = [p for p in plugins if cat.is_installed(p)]
-    print(f"{BOLD}bundle {a.name}{RST} vs installed:")
-    print(f"  {GRN}installed:{RST} {', '.join(present) or '—'}")
-    print(f"  {YEL}missing:{RST}   {', '.join(missing) or '— (bundle fully installed)'}")
-    if missing:
-        print(f"\n{DIM}install them: claude-tools bundle install {a.name}{RST}")
+    res = resolve_bundle(bundles, a.name)
+    miss_p = [p for p in res["plugins"] if not cat.is_installed(p)]
+    have_p = [p for p in res["plugins"] if cat.is_installed(p)]
+    print(f"{BOLD}bundle {a.name}{RST} vs current state:")
+    print(f"  {GRN}plugins installed:{RST} {', '.join(have_p) or '—'}")
+    print(f"  {YEL}plugins missing:{RST}   {', '.join(miss_p) or '— (all installed)'}")
+    miss_m = []
+    if res["mcp"]:
+        configured = configured_mcp_names()
+        have_m = [m for m in res["mcp"] if m in configured]
+        miss_m = [m for m in res["mcp"] if m not in configured]
+        print(f"  {GRN}mcp configured:{RST}    {', '.join(have_m) or '—'}")
+        print(f"  {YEL}mcp missing:{RST}       {', '.join(miss_m) or '— (all configured)'}")
+    if miss_p or miss_m:
+        print(f"\n{DIM}apply: claude-tools bundle install {a.name}{RST}")
 
 def cmd_bundle_install(cat, a):
     bundles = load_bundles()
-    plugins = resolve_bundle(bundles, a.name)
-    todo = plugins if a.force else [p for p in plugins if not cat.is_installed(p)]
-    if not todo:
-        print(f"{GRN}bundle '{a.name}' already fully installed.{RST}"); return
-    print(f"{BOLD}installing bundle '{a.name}'{RST}: {', '.join(todo)}\n")
-    sys.exit(_act(cat, todo, "install", a.dry_run))
+    res = resolve_bundle(bundles, a.name)
+    reg, configured = mcp_registry(), configured_mcp_names()
+    todo_p = res["plugins"] if a.force else [p for p in res["plugins"] if not cat.is_installed(p)]
+    todo_m = res["mcp"] if a.force else [m for m in res["mcp"] if m not in configured]
+    if not todo_p and not todo_m:
+        print(f"{GRN}bundle '{a.name}' already fully applied.{RST}"); return
+    print(f"{BOLD}installing bundle '{a.name}'{RST}")
+    if todo_p: print(f"  plugins: {', '.join(todo_p)}")
+    if todo_m: print(f"  mcp:     {', '.join(todo_m)}")
+    print()
+    rc = 0
+    if todo_p: rc |= _act(cat, todo_p, "install", a.dry_run, note=not todo_m)
+    if todo_m: rc |= _mcp_act(todo_m, "add", a.dry_run, reg)
+    sys.exit(rc)
 
 def cmd_bundle_remove(cat, a):
     bundles = load_bundles()
-    plugins = [p for p in resolve_bundle(bundles, a.name) if cat.is_installed(p)]
-    if not plugins:
+    res = resolve_bundle(bundles, a.name)
+    reg, configured = mcp_registry(), configured_mcp_names()
+    rm_p = [p for p in res["plugins"] if cat.is_installed(p)]
+    rm_m = [m for m in res["mcp"] if m in configured]
+    if not rm_p and not rm_m:
         print(f"{DIM}nothing from bundle '{a.name}' is installed.{RST}"); return
-    print(f"{BOLD}removing bundle '{a.name}'{RST}: {', '.join(plugins)}\n")
-    sys.exit(_act(cat, plugins, "uninstall", a.dry_run))
+    print(f"{BOLD}removing bundle '{a.name}'{RST}")
+    if rm_p: print(f"  plugins: {', '.join(rm_p)}")
+    if rm_m: print(f"  mcp:     {', '.join(rm_m)}")
+    print()
+    rc = 0
+    if rm_p: rc |= _act(cat, rm_p, "uninstall", a.dry_run, note=not rm_m)
+    if rm_m: rc |= _mcp_act(rm_m, "remove", a.dry_run, reg)
+    sys.exit(rc)
 
 def cmd_refresh(cat, a):
     sys.exit(_run(["claude", "plugin", "marketplace", "update"], a.dry_run))
@@ -331,6 +443,17 @@ def build_parser():
 
     s = sub.add_parser("refresh", help="refresh the marketplace catalog")
     s.add_argument("--dry-run", action="store_true"); s.set_defaults(fn=cmd_refresh)
+
+    m = sub.add_parser("mcp", help="standalone MCP servers (registry in bundles.yaml)").add_subparsers(dest="mcmd", required=True)
+    m.add_parser("list", help="list registry + configured MCP servers").set_defaults(fn=cmd_mcp_list)
+    x = m.add_parser("info", help="show a registry MCP server"); x.add_argument("name")
+    x.add_argument("--scope", default="user"); x.set_defaults(fn=cmd_mcp_info)
+    x = m.add_parser("add", help="configure MCP server(s) from the registry"); x.add_argument("names", nargs="+")
+    x.add_argument("--scope", choices=["local", "user", "project"], default="user")
+    x.add_argument("--dry-run", action="store_true"); x.set_defaults(fn=cmd_mcp_add)
+    x = m.add_parser("remove", help="remove configured MCP server(s)"); x.add_argument("names", nargs="+")
+    x.add_argument("--scope", choices=["local", "user", "project"], default="user")
+    x.add_argument("--dry-run", action="store_true"); x.set_defaults(fn=cmd_mcp_remove)
 
     b = sub.add_parser("bundle", help="curated workflow bundles").add_subparsers(dest="bcmd", required=True)
     b.add_parser("list", help="list bundles").set_defaults(fn=cmd_bundle_list)
