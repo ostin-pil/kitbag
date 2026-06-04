@@ -1,0 +1,87 @@
+# claude-tools bundles — curated, shareable sets of Claude Code plugins.
+#
+# Each bundle lists plugin ids (short names from the official marketplace).
+# `include:` composes other bundles so you can build layered profiles.
+# Edit freely, fork, and share — this file IS the artifact.
+#
+#   claude-tools bundle list
+#   claude-tools bundle show web
+#   claude-tools bundle install web
+#
+# Two flavours of bundle live here:
+#   - workflow bundles  (web, ios, android, python, data, security, testing...)
+#   - curator bundles   (essentials, claude-authoring, karpathy — opinionated picks)
+
+bundles:
+  # ---- foundation -----------------------------------------------------------
+  essentials:
+    description: High-signal defaults useful in almost any repo
+    plugins: [superpowers, context7, code-review, code-simplifier, github, security-guidance]
+
+  # ---- web / frontend -------------------------------------------------------
+  web:
+    description: Frontend & web app development
+    include: [essentials]
+    plugins: [frontend-design, typescript-lsp, playwright, chrome-devtools-mcp, figma]
+
+  # ---- mobile ---------------------------------------------------------------
+  ios:
+    description: iOS / Swift development
+    include: [essentials]
+    plugins: [swift-lsp]
+  android:
+    description: Android / Kotlin development
+    include: [essentials]
+    plugins: [kotlin-lsp]
+  mobile:
+    description: Cross-platform mobile (Expo / React Native + native LSPs)
+    include: [essentials]
+    plugins: [expo, typescript-lsp, swift-lsp, kotlin-lsp]
+
+  # ---- backend / languages --------------------------------------------------
+  typescript:
+    description: TypeScript / Node backend
+    include: [essentials]
+    plugins: [typescript-lsp, prisma]
+  python:
+    description: Python development
+    include: [essentials]
+    plugins: [pyright-lsp]
+  go:
+    description: Go development
+    include: [essentials]
+    plugins: [gopls-lsp]
+  rust:
+    description: Rust development
+    include: [essentials]
+    plugins: [rust-analyzer-lsp]
+
+  # ---- data / db ------------------------------------------------------------
+  data:
+    description: Data engineering & databases
+    include: [essentials]
+    plugins: [data-engineering, duckdb-skills, supabase, mongodb]
+
+  # ---- security -------------------------------------------------------------
+  security:
+    description: Security review & scanning
+    plugins: [security-guidance, semgrep, sonarqube]
+
+  # ---- testing / quality ----------------------------------------------------
+  testing:
+    description: Test & browser automation
+    plugins: [playwright, chrome-devtools-mcp, codspeed]
+  quality:
+    description: Code review, simplification & PR hygiene
+    plugins: [code-review, code-simplifier, pr-review-toolkit, security-guidance]
+
+  # ---- meta: building for Claude Code itself --------------------------------
+  claude-authoring:
+    description: Author skills, plugins, hooks, MCP servers & agents
+    plugins: [skill-creator, plugin-dev, hookify, mcp-server-dev, agent-sdk-dev,
+              claude-md-management, claude-code-setup]
+
+  # ---- example curator bundle (edit / rename to your taste) -----------------
+  karpathy:
+    description: "Example 'curator' bundle — opinionated minimalist picks"
+    plugins: [superpowers, context7, code-review, skill-creator, pyright-lsp, typescript-lsp]

@@ -1,0 +1,354 @@
+#!/usr/bin/env python3
+"""claude-tools — one entry point to explore, (un)install, batch, and evaluate
+Claude Code instruments (plugins today; MCP/skills are an extension point).
+
+Reads the local plugin catalog cache for fast, offline explore/eval and shells
+out to the `claude` CLI only for mutating actions. Curated, shareable bundles
+live in bundles.yaml next to this script (override with $CLAUDE_TOOLS_BUNDLES).
+"""
+from __future__ import annotations
+import argparse, json, os, subprocess, sys
+from pathlib import Path
+
+HOME = Path.home()
+CATALOG = HOME / ".claude/plugins/plugin-catalog-cache.json"
+SETTINGS = HOME / ".claude/settings.json"
+INSTALLED = HOME / ".claude/plugins/installed_plugins.json"
+DEFAULT_MARKET = "claude-plugins-official"
+BUNDLES = Path(os.environ.get("CLAUDE_TOOLS_BUNDLES",
+                              Path(__file__).resolve().parent / "bundles.yaml"))
+# token-cost model preference (catalog may not carry the very newest model)
+MODEL_PREF = ["claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-4-6"]
+
+# ---- styling -----------------------------------------------------------------
+def _c(code): return "" if not sys.stdout.isatty() else code
+BOLD, DIM, GRN, YEL, CYN, RED, RST = (_c("\033[1m"), _c("\033[2m"), _c("\033[32m"),
+    _c("\033[33m"), _c("\033[36m"), _c("\033[31m"), _c("\033[0m"))
+
+def die(msg): print(f"{RED}error:{RST} {msg}", file=sys.stderr); sys.exit(1)
+
+def load_json(p, default=None):
+    try:
+        return json.loads(Path(p).read_text())
+    except FileNotFoundError:
+        if default is not None: return default
+        die(f"missing {p} — is Claude Code installed? Try: claude-tools refresh")
+    except json.JSONDecodeError as e:
+        die(f"corrupt JSON in {p}: {e}")
+
+# ---- catalog model -----------------------------------------------------------
+class Catalog:
+    def __init__(self):
+        raw = load_json(CATALOG)
+        self.fetched_at = raw.get("fetchedAt") or raw.get("catalog", {}).get("generated_at")
+        plugins = raw.get("catalog", {}).get("plugins", {})
+        self.by_name = {}      # short name -> record
+        for key, e in plugins.items():
+            short = key.split("@")[0]
+            market = key.split("@")[1] if "@" in key else DEFAULT_MARKET
+            me = e.get("marketplace_entry") or {}
+            self.by_name[short] = {
+                "name": short, "key": key, "market": market,
+                "display": me.get("displayName") or short,
+                "desc": me.get("description") or "",
+                "category": me.get("category") or "",
+                "tags": me.get("tags") or [],
+                "keywords": me.get("keywords") or [],
+                "author": (me.get("author") or {}).get("name") if isinstance(me.get("author"), dict) else me.get("author"),
+                "installs": e.get("unique_installs") or 0,
+                "tokens": e.get("tokens") or {},
+                "components": e.get("components") or {},
+            }
+        # state
+        self.enabled = {k.split("@")[0]: v for k, v in
+                        load_json(SETTINGS, {}).get("enabledPlugins", {}).items()}
+        inst = load_json(INSTALLED, {}).get("plugins", {})
+        self.installed = {k.split("@")[0] for k in inst}
+
+    def get(self, name): return self.by_name.get(name)
+    def is_installed(self, name): return name in self.installed
+    def is_enabled(self, name): return self.enabled.get(name) is True
+
+    def model_for(self, rec):
+        tk = rec["tokens"]
+        for m in MODEL_PREF:
+            if m in tk: return m
+        return next(iter(tk), None)
+
+    def cost(self, rec):
+        m = self.model_for(rec)
+        d = rec["tokens"].get(m, {}) if m else {}
+        return d.get("always_on", 0), d.get("on_invoke", 0), m
+
+    def comp_summary(self, rec):
+        c = rec["components"]
+        parts = []
+        for kind, label in [("commands", "cmd"), ("agents", "agent"),
+                            ("skills", "skill"), ("hooks", "hook"),
+                            ("mcpServers", "mcp"), ("lspServers", "lsp")]:
+            items = c.get(kind) or []
+            if items: parts.append(f"{len(items)} {label}")
+        return ", ".join(parts) or "—"
+
+# ---- formatting --------------------------------------------------------------
+def status_tag(cat, name):
+    if cat.is_enabled(name): return f"{GRN}●{RST}"      # enabled
+    if cat.is_installed(name): return f"{YEL}◐{RST}"    # installed, disabled
+    return f"{DIM}○{RST}"                                # available
+
+def fmt_k(n):
+    return f"{n/1000:.0f}k" if n >= 1000 else str(n)
+
+def print_rows(cat, recs, show_cost=True):
+    if not recs: print(f"{DIM}(nothing matched){RST}"); return
+    for r in recs:
+        ao, oi, _ = cat.cost(r)
+        cost = f"{DIM}{ao:>4}/{fmt_k(oi):>4} tok{RST}" if show_cost else ""
+        inst = f"{fmt_k(r['installs']):>6}"
+        print(f" {status_tag(cat, r['name'])} {BOLD}{r['name']:<26}{RST} "
+              f"{DIM}{inst}{RST}  {cost}  {r['desc'][:58]}")
+
+LEGEND = f"{DIM}legend: {GRN}● enabled{DIM}  {YEL}◐ installed{DIM}  ○ available   cost = always-on/on-invoke tokens{RST}"
+
+# ---- commands ----------------------------------------------------------------
+def cmd_search(cat, a):
+    q = (a.query or "").lower()
+    recs = list(cat.by_name.values())
+    def hay(r): return " ".join([r["name"], r["display"], r["desc"], r["category"],
+                                 " ".join(r["tags"]), " ".join(r["keywords"])]).lower()
+    if q: recs = [r for r in recs if all(t in hay(r) for t in q.split())]
+    if a.category: recs = [r for r in recs if r["category"] == a.category]
+    if a.tag: recs = [r for r in recs if a.tag in r["tags"]]
+    if a.installed: recs = [r for r in recs if cat.is_installed(r["name"])]
+    keyf = {"installs": lambda r: -r["installs"],
+            "cost": lambda r: -cat.cost(r)[0],
+            "name": lambda r: r["name"]}[a.sort]
+    recs.sort(key=keyf)
+    recs = recs[:a.limit]
+    if a.json: print(json.dumps([r["name"] for r in recs])); return
+    print(f"{BOLD}{len(recs)} result(s){RST}  {DIM}sorted by {a.sort}{RST}")
+    print_rows(cat, recs); print(); print(LEGEND)
+
+def cmd_info(cat, a):
+    r = cat.get(a.name) or die(f"unknown plugin '{a.name}' (try: claude-tools search {a.name})")
+    ao, oi, model = cat.cost(r)
+    state = ("enabled" if cat.is_enabled(a.name) else
+             "installed (disabled)" if cat.is_installed(a.name) else "available")
+    print(f"{BOLD}{r['name']}{RST}  {DIM}({r['display']}){RST}")
+    print(f"  {r['desc']}")
+    print(f"  {DIM}source:{RST} {r['key']}   {DIM}category:{RST} {r['category'] or '—'}"
+          f"   {DIM}installs:{RST} {fmt_k(r['installs'])}")
+    if r["tags"]: print(f"  {DIM}tags:{RST} {', '.join(r['tags'])}")
+    print(f"  {DIM}status:{RST} {state}")
+    print(f"  {DIM}components:{RST} {cat.comp_summary(r)}")
+    print(f"  {DIM}token cost ({model}):{RST} {ao} always-on, {oi} on-invoke")
+    print(f"\n{DIM}full inventory:{RST} claude plugin details {r['name']}")
+
+def _resolve(cat, names):
+    out = []
+    for n in names:
+        r = cat.get(n) or die(f"unknown plugin '{n}' (try: claude-tools search {n})")
+        out.append(r)
+    return out
+
+def _run(argv, dry):
+    print(f"{CYN}$ {' '.join(argv)}{RST}")
+    if dry: return 0
+    return subprocess.call(argv)
+
+def _act(cat, names, verb, dry):
+    recs = _resolve(cat, names)
+    rc = 0
+    for r in recs:
+        if verb == "install":
+            argv = ["claude", "plugin", "install", r["key"], "--scope", "user"]
+        elif verb == "uninstall":
+            argv = ["claude", "plugin", "uninstall", r["name"]]
+        else:  # enable / disable
+            argv = ["claude", "plugin", verb, r["name"]]
+        rc |= _run(argv, dry)
+    if not dry:
+        print(f"\n{DIM}you may need /reload-plugins (or restart) for changes to load.{RST}")
+    return rc
+
+def cmd_install(cat, a): sys.exit(_act(cat, a.names, "install", a.dry_run))
+def cmd_remove(cat, a):  sys.exit(_act(cat, a.names, "uninstall", a.dry_run))
+def cmd_enable(cat, a):  sys.exit(_act(cat, a.names, "enable", a.dry_run))
+def cmd_disable(cat, a): sys.exit(_act(cat, a.names, "disable", a.dry_run))
+
+def cmd_list(cat, a):
+    recs = [r for r in cat.by_name.values() if cat.is_installed(r["name"])]
+    if a.enabled: recs = [r for r in recs if cat.is_enabled(r["name"])]
+    recs.sort(key=lambda r: r["name"])
+    print(f"{BOLD}{len(recs)} installed{RST}")
+    print_rows(cat, recs); print(); print(LEGEND)
+
+def cmd_eval(cat, a):
+    if a.names:
+        recs = _resolve(cat, a.names)
+    else:
+        recs = [r for r in cat.by_name.values() if cat.is_enabled(r["name"])]
+    recs.sort(key=lambda r: -cat.cost(r)[0])
+    total_ao = total_oi = 0
+    model = cat.model_for(recs[0]) if recs else MODEL_PREF[0]
+    print(f"{BOLD}token budget{RST}  {DIM}({len(recs)} plugins, model {model}){RST}\n")
+    print(f"  {'plugin':<26}{'always-on':>11}{'on-invoke':>11}")
+    for r in recs:
+        ao, oi, _ = cat.cost(r)
+        total_ao += ao; total_oi += oi
+        flag = f" {YEL}heavy{RST}" if ao >= 200 else ""
+        print(f"  {r['name']:<26}{ao:>11}{fmt_k(oi):>11}{flag}")
+    print(f"  {'-'*48}")
+    print(f"  {BOLD}{'TOTAL':<26}{total_ao:>11}{fmt_k(total_oi):>11}{RST}")
+    print(f"\n  {DIM}always-on is added to EVERY session; on-invoke is paid per fire.{RST}")
+
+# ---- bundles -----------------------------------------------------------------
+def load_bundles():
+    if not BUNDLES.exists():
+        die(f"no bundle manifest at {BUNDLES}")
+    try:
+        import yaml
+        data = yaml.safe_load(BUNDLES.read_text()) or {}
+    except ImportError:
+        die("PyYAML not available; install it or set $CLAUDE_TOOLS_BUNDLES to a .json file")
+    return data.get("bundles", {})
+
+def resolve_bundle(bundles, name, seen=None):
+    """Flatten a bundle to a plugin-name list, following `include:`."""
+    seen = seen or set()
+    if name in seen: return []
+    seen.add(name)
+    b = bundles.get(name) or die(f"unknown bundle '{name}' (try: claude-tools bundle list)")
+    plugins = list(b.get("plugins", []))
+    for inc in b.get("include", []):
+        plugins += resolve_bundle(bundles, inc, seen)
+    out = []
+    for p in plugins:
+        if p not in out: out.append(p)
+    return out
+
+def cmd_bundle_list(cat, a):
+    bundles = load_bundles()
+    print(f"{BOLD}{len(bundles)} bundle(s){RST}  {DIM}from {BUNDLES}{RST}\n")
+    for name, b in bundles.items():
+        plugins = resolve_bundle(bundles, name)
+        n_on = sum(1 for p in plugins if cat.is_enabled(p))
+        print(f"  {BOLD}{name:<16}{RST} {DIM}{len(plugins):>2} plugins, {n_on} active{RST}  "
+              f"{b.get('description','')[:50]}")
+    print(f"\n{DIM}see one: claude-tools bundle show <name>{RST}")
+
+def cmd_bundle_show(cat, a):
+    bundles = load_bundles()
+    plugins = resolve_bundle(bundles, a.name)
+    b = bundles[a.name]
+    print(f"{BOLD}{a.name}{RST}  {DIM}{b.get('description','')}{RST}")
+    if b.get("include"): print(f"  {DIM}includes:{RST} {', '.join(b['include'])}")
+    print()
+    recs = [cat.get(p) for p in plugins]
+    missing = [p for p, r in zip(plugins, recs) if r is None]
+    print_rows(cat, [r for r in recs if r])
+    if missing: print(f" {RED}not in catalog:{RST} {', '.join(missing)}")
+    print(); print(LEGEND)
+
+def cmd_bundle_diff(cat, a):
+    bundles = load_bundles()
+    plugins = resolve_bundle(bundles, a.name)
+    missing = [p for p in plugins if not cat.is_installed(p)]
+    present = [p for p in plugins if cat.is_installed(p)]
+    print(f"{BOLD}bundle {a.name}{RST} vs installed:")
+    print(f"  {GRN}installed:{RST} {', '.join(present) or '—'}")
+    print(f"  {YEL}missing:{RST}   {', '.join(missing) or '— (bundle fully installed)'}")
+    if missing:
+        print(f"\n{DIM}install them: claude-tools bundle install {a.name}{RST}")
+
+def cmd_bundle_install(cat, a):
+    bundles = load_bundles()
+    plugins = resolve_bundle(bundles, a.name)
+    todo = plugins if a.force else [p for p in plugins if not cat.is_installed(p)]
+    if not todo:
+        print(f"{GRN}bundle '{a.name}' already fully installed.{RST}"); return
+    print(f"{BOLD}installing bundle '{a.name}'{RST}: {', '.join(todo)}\n")
+    sys.exit(_act(cat, todo, "install", a.dry_run))
+
+def cmd_bundle_remove(cat, a):
+    bundles = load_bundles()
+    plugins = [p for p in resolve_bundle(bundles, a.name) if cat.is_installed(p)]
+    if not plugins:
+        print(f"{DIM}nothing from bundle '{a.name}' is installed.{RST}"); return
+    print(f"{BOLD}removing bundle '{a.name}'{RST}: {', '.join(plugins)}\n")
+    sys.exit(_act(cat, plugins, "uninstall", a.dry_run))
+
+def cmd_refresh(cat, a):
+    sys.exit(_run(["claude", "plugin", "marketplace", "update"], a.dry_run))
+
+def cmd_status(cat, a):
+    inst = [r for r in cat.by_name.values() if cat.is_installed(r["name"])]
+    en = [r for r in inst if cat.is_enabled(r["name"])]
+    total_ao = sum(cat.cost(r)[0] for r in en)
+    print(f"{BOLD}claude-tools status{RST}")
+    print(f"  catalog: {len(cat.by_name)} plugins  {DIM}(fetched {cat.fetched_at}){RST}")
+    print(f"  installed: {len(inst)}   enabled: {len(en)}")
+    print(f"  always-on token budget (enabled): {BOLD}{total_ao}{RST} tok/session")
+    heavy = sorted(en, key=lambda r: -cat.cost(r)[0])[:3]
+    if heavy:
+        print(f"  heaviest: " + ", ".join(f"{r['name']}({cat.cost(r)[0]})" for r in heavy))
+    print(f"\n{DIM}explore: claude-tools search <q>   bundles: claude-tools bundle list{RST}")
+
+# ---- argparse ----------------------------------------------------------------
+def build_parser():
+    p = argparse.ArgumentParser(prog="claude-tools", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("search", help="search the catalog")
+    s.add_argument("query", nargs="?", default="")
+    s.add_argument("--category"); s.add_argument("--tag")
+    s.add_argument("--installed", action="store_true")
+    s.add_argument("--sort", choices=["installs", "cost", "name"], default="installs")
+    s.add_argument("--limit", type=int, default=25); s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_search)
+
+    s = sub.add_parser("info", help="show plugin detail + token cost")
+    s.add_argument("name"); s.set_defaults(fn=cmd_info)
+
+    for verb, fn, help in [("install", cmd_install, "install plugin(s)"),
+                           ("remove", cmd_remove, "uninstall plugin(s)"),
+                           ("enable", cmd_enable, "enable plugin(s)"),
+                           ("disable", cmd_disable, "disable plugin(s)")]:
+        s = sub.add_parser(verb, help=help)
+        s.add_argument("names", nargs="+")
+        s.add_argument("--dry-run", action="store_true", help="print commands, don't run")
+        s.set_defaults(fn=fn)
+
+    s = sub.add_parser("list", help="list installed plugins")
+    s.add_argument("--enabled", action="store_true"); s.set_defaults(fn=cmd_list)
+
+    s = sub.add_parser("eval", help="token-cost report (enabled set, or given names)")
+    s.add_argument("names", nargs="*"); s.set_defaults(fn=cmd_eval)
+
+    s = sub.add_parser("status", help="summary of installed/enabled + token budget")
+    s.set_defaults(fn=cmd_status)
+
+    s = sub.add_parser("refresh", help="refresh the marketplace catalog")
+    s.add_argument("--dry-run", action="store_true"); s.set_defaults(fn=cmd_refresh)
+
+    b = sub.add_parser("bundle", help="curated workflow bundles").add_subparsers(dest="bcmd", required=True)
+    b.add_parser("list", help="list bundles").set_defaults(fn=cmd_bundle_list)
+    x = b.add_parser("show", help="show a bundle's plugins"); x.add_argument("name"); x.set_defaults(fn=cmd_bundle_show)
+    x = b.add_parser("diff", help="installed vs bundle"); x.add_argument("name"); x.set_defaults(fn=cmd_bundle_diff)
+    x = b.add_parser("install", help="install a bundle"); x.add_argument("name")
+    x.add_argument("--force", action="store_true"); x.add_argument("--dry-run", action="store_true"); x.set_defaults(fn=cmd_bundle_install)
+    x = b.add_parser("remove", help="remove a bundle's plugins"); x.add_argument("name")
+    x.add_argument("--dry-run", action="store_true"); x.set_defaults(fn=cmd_bundle_remove)
+    return p
+
+def main():
+    args = build_parser().parse_args()
+    cat = Catalog()
+    args.fn(cat, args)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(130)
