@@ -1,61 +1,68 @@
-# claude-tools
+# kitbag
 
 One entry point to **explore, (un)install, batch, and evaluate** Claude Code
 instruments — and to share curated **bundles** of them per workflow or curator.
 
 It reads the local plugin catalog cache for instant, offline search/eval and shells
 out to the `claude` CLI only for mutating actions. Curated bundles live in
-[`bundles.yaml`](bundles.yaml) — that file *is* the shareable artifact: fork it,
-edit it, pass it around.
+[`kitbag/bundles.yaml`](kitbag/bundles.yaml) — that file *is* the shareable artifact:
+fork it, edit it, pass it around.
 
 > Origin: this repo started as a one-off plugin-install script
 > ([`install-plugins.sh`](install-plugins.sh), [`PLAN.md`](PLAN.md)) and grew into the
-> general `claude-tools` CLI.
+> general `kitbag` CLI.
 
 ## Install
 
 ```bash
-chmod +x claude-tools
-ln -s "$PWD/claude-tools" ~/.local/bin/claude-tools   # or put the repo on $PATH
+# from a checkout
+pipx install .            # or: uv tool install .
+# editable, for hacking on it
+pip install -e .
+
+# run without installing
+python -m kitbag --help
 ```
 
 Requires: Python 3.8+, PyYAML, and the `claude` CLI. No other dependencies.
+
+Use a different manifest with `--manifest /path/to/file.yaml` or `$KITBAG_MANIFEST`.
 
 ## Usage
 
 ```bash
 # explore
-claude-tools search lsp --sort installs        # search the 207-plugin catalog
-claude-tools search --category security
-claude-tools info playwright                   # detail + component inventory + token cost
+kitbag search lsp --sort installs        # search the 207-plugin catalog
+kitbag search --category security
+kitbag info playwright                   # detail + component inventory + token cost
 
 # act (ad-hoc lists)
-claude-tools install frontend-design typescript-lsp playwright
-claude-tools remove figma
-claude-tools enable code-review  /  disable code-review
-claude-tools install <names...> --dry-run      # preview the exact commands
+kitbag install frontend-design typescript-lsp playwright
+kitbag remove figma
+kitbag enable code-review  /  disable code-review
+kitbag install <names...> --dry-run      # preview the exact commands
 
 # evaluate
-claude-tools status                            # installed/enabled + always-on token budget
-claude-tools eval                              # per-plugin token cost of the enabled set
-claude-tools list --enabled
+kitbag status                            # installed/enabled + always-on token budget
+kitbag eval                              # per-plugin token cost of the enabled set
+kitbag list --enabled
 
 # standalone MCP servers (registry in bundles.yaml)
-claude-tools mcp list                          # registry + already-configured servers
-claude-tools mcp info sentry
-claude-tools mcp add sentry                    # -> claude mcp add ... (--scope user)
-claude-tools mcp remove sentry
-claude-tools mcp add <name> --dry-run
+kitbag mcp list                          # registry + already-configured servers
+kitbag mcp info sentry
+kitbag mcp add sentry                    # -> claude mcp add ... (--scope user)
+kitbag mcp remove sentry
+kitbag mcp add <name> --dry-run
 
 # bundles (curated, shareable sets of plugins AND mcp servers)
-claude-tools bundle list
-claude-tools bundle show observability
-claude-tools bundle diff web                   # installed vs bundle
-claude-tools bundle install web                # installs only what's missing (plugins + mcp)
-claude-tools bundle remove web
+kitbag bundle list
+kitbag bundle show observability
+kitbag bundle diff web                   # installed vs bundle
+kitbag bundle install web                # installs only what's missing (plugins + mcp)
+kitbag bundle remove web
 
 # maintenance
-claude-tools refresh                           # refresh the marketplace catalog cache
+kitbag refresh                           # refresh the marketplace catalog cache
 ```
 
 Status glyphs: `●` enabled · `◐` installed-but-disabled · `○` available.
@@ -82,7 +89,7 @@ Seeded bundles: `essentials`, `web`, `ios`, `android`, `mobile`, `typescript`,
 `python`, `go`, `rust`, `data`, `security`, `testing`, `quality`,
 `claude-authoring`, and an example curator bundle `karpathy`.
 
-Point the tool at a different manifest with `CLAUDE_TOOLS_BUNDLES=/path/to/file.yaml`.
+Point the tool at a different manifest with `KITBAG_MANIFEST=/path/to/file.yaml`.
 
 ## Standalone MCP servers
 

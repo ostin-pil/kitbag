@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""claude-tools — one entry point to explore, (un)install, batch, and evaluate
+"""kitbag — one entry point to explore, (un)install, batch, and evaluate
 Claude Code instruments (plugins today; MCP/skills are an extension point).
 
 Reads the local plugin catalog cache for fast, offline explore/eval and shells
 out to the `claude` CLI only for mutating actions. Curated, shareable bundles
-live in bundles.yaml next to this script (override with $CLAUDE_TOOLS_BUNDLES).
+live in bundles.yaml next to this script (override with $KITBAG_MANIFEST).
 """
 from __future__ import annotations
 import argparse, json, os, subprocess, sys
@@ -15,10 +15,17 @@ CATALOG = HOME / ".claude/plugins/plugin-catalog-cache.json"
 SETTINGS = HOME / ".claude/settings.json"
 INSTALLED = HOME / ".claude/plugins/installed_plugins.json"
 DEFAULT_MARKET = "claude-plugins-official"
-BUNDLES = Path(os.environ.get("CLAUDE_TOOLS_BUNDLES",
+BUNDLES = Path(os.environ.get("KITBAG_MANIFEST",
                               Path(__file__).resolve().parent / "bundles.yaml"))
 # token-cost model preference (catalog may not carry the very newest model)
 MODEL_PREF = ["claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-4-6"]
+SCHEMA = 1  # manifest schema version this CLI understands
+
+try:
+    from importlib.metadata import version as _pkgver
+    VERSION = _pkgver("kitbag")
+except Exception:
+    VERSION = "0.0.0+src"
 
 # ---- styling -----------------------------------------------------------------
 def _c(code): return "" if not sys.stdout.isatty() else code
@@ -32,7 +39,7 @@ def load_json(p, default=None):
         return json.loads(Path(p).read_text())
     except FileNotFoundError:
         if default is not None: return default
-        die(f"missing {p} — is Claude Code installed? Try: claude-tools refresh")
+        die(f"missing {p} — is Claude Code installed? Try: kitbag refresh")
     except json.JSONDecodeError as e:
         die(f"corrupt JSON in {p}: {e}")
 
@@ -130,7 +137,7 @@ def cmd_search(cat, a):
     print_rows(cat, recs); print(); print(LEGEND)
 
 def cmd_info(cat, a):
-    r = cat.get(a.name) or die(f"unknown plugin '{a.name}' (try: claude-tools search {a.name})")
+    r = cat.get(a.name) or die(f"unknown plugin '{a.name}' (try: kitbag search {a.name})")
     ao, oi, model = cat.cost(r)
     state = ("enabled" if cat.is_enabled(a.name) else
              "installed (disabled)" if cat.is_installed(a.name) else "available")
@@ -147,7 +154,7 @@ def cmd_info(cat, a):
 def _resolve(cat, names):
     out = []
     for n in names:
-        r = cat.get(n) or die(f"unknown plugin '{n}' (try: claude-tools search {n})")
+        r = cat.get(n) or die(f"unknown plugin '{n}' (try: kitbag search {n})")
         out.append(r)
     return out
 
@@ -203,14 +210,24 @@ def cmd_eval(cat, a):
     print(f"\n  {DIM}always-on is added to EVERY session; on-invoke is paid per fire.{RST}")
 
 # ---- manifest (bundles + standalone MCP registry) ---------------------------
+_manifest_cache = None
 def load_manifest():
+    global _manifest_cache
+    if _manifest_cache is not None: return _manifest_cache
     if not BUNDLES.exists():
-        die(f"no bundle manifest at {BUNDLES}")
+        die(f"no manifest at {BUNDLES} (set $KITBAG_MANIFEST or use --manifest)")
     try:
         import yaml
     except ImportError:
         die("PyYAML not available; install it (pip install pyyaml)")
-    return yaml.safe_load(BUNDLES.read_text()) or {}
+    data = yaml.safe_load(BUNDLES.read_text()) or {}
+    sv = data.get("schema")
+    if sv is not None and sv > SCHEMA:
+        print(f"{YEL}warning:{RST} manifest schema v{sv} is newer than kitbag "
+              f"(v{SCHEMA}); some fields may be ignored. Upgrade: pip install -U kitbag",
+              file=sys.stderr)
+    _manifest_cache = data
+    return data
 
 def load_bundles(): return load_manifest().get("bundles", {})
 def mcp_registry(): return load_manifest().get("mcp_servers", {})
@@ -220,7 +237,7 @@ def resolve_bundle(bundles, name, seen=None):
     seen = seen or set()
     if name in seen: return {"plugins": [], "mcp": []}
     seen.add(name)
-    b = bundles.get(name) or die(f"unknown bundle '{name}' (try: claude-tools bundle list)")
+    b = bundles.get(name) or die(f"unknown bundle '{name}' (try: kitbag bundle list)")
     plugins, mcp = list(b.get("plugins", [])), list(b.get("mcp", []))
     for inc in b.get("include", []):
         sub = resolve_bundle(bundles, inc, seen)
@@ -289,7 +306,7 @@ def cmd_mcp_list(cat, a):
     extra = [n for n in sorted(configured) if n not in reg]
     if extra:
         print(f"\n {DIM}also configured (not in registry): {', '.join(extra)}{RST}")
-    print(f"\n{DIM}● configured  ○ not yet   add: claude-tools mcp add <name>{RST}")
+    print(f"\n{DIM}● configured  ○ not yet   add: kitbag mcp add <name>{RST}")
 
 def cmd_mcp_add(cat, a): sys.exit(_mcp_act(a.names, "add", a.dry_run, mcp_registry(), a.scope))
 def cmd_mcp_remove(cat, a): sys.exit(_mcp_act(a.names, "remove", a.dry_run, mcp_registry(), a.scope))
@@ -315,7 +332,7 @@ def cmd_bundle_list(cat, a):
         mcp_s = f"+{nm}m" if nm else ""
         print(f"  {BOLD}{name:<16}{RST} {DIM}{np}p{mcp_s:<3} {active} active{RST}  "
               f"{b.get('description','')[:48]}")
-    print(f"\n{DIM}see one: claude-tools bundle show <name>{RST}")
+    print(f"\n{DIM}see one: kitbag bundle show <name>{RST}")
 
 def cmd_bundle_show(cat, a):
     bundles = load_bundles()
@@ -354,7 +371,7 @@ def cmd_bundle_diff(cat, a):
         print(f"  {GRN}mcp configured:{RST}    {', '.join(have_m) or '—'}")
         print(f"  {YEL}mcp missing:{RST}       {', '.join(miss_m) or '— (all configured)'}")
     if miss_p or miss_m:
-        print(f"\n{DIM}apply: claude-tools bundle install {a.name}{RST}")
+        print(f"\n{DIM}apply: kitbag bundle install {a.name}{RST}")
 
 def cmd_bundle_install(cat, a):
     bundles = load_bundles()
@@ -397,19 +414,22 @@ def cmd_status(cat, a):
     inst = [r for r in cat.by_name.values() if cat.is_installed(r["name"])]
     en = [r for r in inst if cat.is_enabled(r["name"])]
     total_ao = sum(cat.cost(r)[0] for r in en)
-    print(f"{BOLD}claude-tools status{RST}")
+    print(f"{BOLD}kitbag status{RST}")
     print(f"  catalog: {len(cat.by_name)} plugins  {DIM}(fetched {cat.fetched_at}){RST}")
     print(f"  installed: {len(inst)}   enabled: {len(en)}")
     print(f"  always-on token budget (enabled): {BOLD}{total_ao}{RST} tok/session")
     heavy = sorted(en, key=lambda r: -cat.cost(r)[0])[:3]
     if heavy:
         print(f"  heaviest: " + ", ".join(f"{r['name']}({cat.cost(r)[0]})" for r in heavy))
-    print(f"\n{DIM}explore: claude-tools search <q>   bundles: claude-tools bundle list{RST}")
+    print(f"\n{DIM}explore: kitbag search <q>   bundles: kitbag bundle list{RST}")
 
 # ---- argparse ----------------------------------------------------------------
 def build_parser():
-    p = argparse.ArgumentParser(prog="claude-tools", description=__doc__,
+    p = argparse.ArgumentParser(prog="kitbag", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--version", action="version", version=f"kitbag {VERSION}")
+    p.add_argument("--manifest", metavar="PATH",
+                   help="manifest file to use (overrides $KITBAG_MANIFEST / packaged default)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("search", help="search the catalog")
@@ -466,12 +486,15 @@ def build_parser():
     return p
 
 def main():
+    global BUNDLES
     args = build_parser().parse_args()
-    cat = Catalog()
-    args.fn(cat, args)
-
-if __name__ == "__main__":
+    if getattr(args, "manifest", None):
+        BUNDLES = Path(args.manifest).expanduser()
     try:
-        main()
+        cat = Catalog()
+        args.fn(cat, args)
     except KeyboardInterrupt:
         sys.exit(130)
+
+if __name__ == "__main__":
+    main()

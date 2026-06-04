@@ -1,16 +1,18 @@
-# claude-tools bundles — curated, shareable sets of Claude Code plugins.
+# kitbag manifest — curated, shareable sets of Claude Code plugins & MCP servers.
 #
 # Each bundle lists plugin ids (short names from the official marketplace).
 # `include:` composes other bundles so you can build layered profiles.
 # Edit freely, fork, and share — this file IS the artifact.
 #
-#   claude-tools bundle list
-#   claude-tools bundle show web
-#   claude-tools bundle install web
+#   kitbag bundle list
+#   kitbag bundle show web
+#   kitbag bundle install web
 #
 # Two flavours of bundle live here:
 #   - workflow bundles  (web, ios, android, python, data, security, testing...)
 #   - curator bundles   (essentials, claude-authoring, karpathy — opinionated picks)
+
+schema: 1   # kitbag manifest schema version
 
 # Standalone MCP servers — arbitrary endpoints with no marketplace catalog, so
 # their full definition lives here and bundles reference them by name (under `mcp:`).
