@@ -483,7 +483,33 @@ def build_parser():
     x.add_argument("--force", action="store_true"); x.add_argument("--dry-run", action="store_true"); x.set_defaults(fn=cmd_bundle_install)
     x = b.add_parser("remove", help="remove a bundle's plugins"); x.add_argument("name")
     x.add_argument("--dry-run", action="store_true"); x.set_defaults(fn=cmd_bundle_remove)
+
+    g = sub.add_parser("generate", help="generate distributable artifacts from the manifest").add_subparsers(dest="gcmd", required=True)
+    x = g.add_parser("marketplace", help="emit a Claude Code marketplace repo from bundles")
+    x.add_argument("--out", default="dist/marketplace", help="output directory")
+    x.add_argument("--layout", choices=["per-bundle", "single"], default="per-bundle")
+    x.add_argument("--name", default="kitbag-bundles", help="marketplace name")
+    x.add_argument("--author", default="kitbag authors")
+    x.add_argument("--dry-run", action="store_true", help="list files, don't write")
+    x.set_defaults(fn=cmd_generate_marketplace, needs_catalog=False)
     return p
+
+def cmd_generate_marketplace(cat, a):
+    from . import generate as gen
+    files = gen.build_marketplace(load_manifest(), name=a.name, author=a.author,
+                                  layout=a.layout)
+    if a.dry_run:
+        print(f"{BOLD}{len(files)} file(s){RST} would be written to {a.out}/ "
+              f"{DIM}(layout: {a.layout}){RST}")
+        for rel in sorted(files): print(f"  {rel}")
+        return
+    written = gen.write_tree(a.out, files)
+    print(f"{BOLD}generated marketplace{RST} -> {a.out}/  "
+          f"{DIM}({len(written)} files, layout: {a.layout}){RST}")
+    print(f"\n{DIM}next:{RST}")
+    print(f"  cd {a.out} && git init -q && git add -A && git commit -qm 'kitbag marketplace'")
+    print(f"  claude plugin marketplace add <owner>/<repo>")
+    print(f"  claude plugin install <bundle>@{a.name}")
 
 def main():
     global BUNDLES
@@ -491,7 +517,7 @@ def main():
     if getattr(args, "manifest", None):
         BUNDLES = Path(args.manifest).expanduser()
     try:
-        cat = Catalog()
+        cat = Catalog() if getattr(args, "needs_catalog", True) else None
         args.fn(cat, args)
     except KeyboardInterrupt:
         sys.exit(130)

@@ -91,6 +91,30 @@ Seeded bundles: `essentials`, `web`, `ios`, `android`, `mobile`, `typescript`,
 
 Point the tool at a different manifest with `KITBAG_MANIFEST=/path/to/file.yaml`.
 
+## Generate a marketplace (single source)
+
+`bundles.yaml` is the single source of truth; kitbag can derive a distributable
+**Claude Code marketplace** from it so bundles install natively via `/plugin`:
+
+```bash
+kitbag generate marketplace --out dist/marketplace            # one plugin per bundle
+kitbag generate marketplace --layout single                   # one plugin, command per bundle
+kitbag generate marketplace --dry-run                         # list files only
+```
+
+Each bundle becomes a tiny plugin whose slash command runs `kitbag bundle install
+<bundle>` (Claude Code plugins have no plugin→plugin dependency field, so members
+are installed by the command rather than declared as deps). Output is validated by
+`claude plugin validate`. Publish the generated directory as its own git repo:
+
+```bash
+cd dist/marketplace && git init && git add -A && git commit -m "kitbag marketplace"
+claude plugin marketplace add <owner>/<repo>
+claude plugin install web@kitbag-bundles
+```
+
+Re-run the generator whenever `bundles.yaml` changes — never hand-edit the output.
+
 ## Standalone MCP servers
 
 MCP servers have no marketplace catalog, so the manifest carries an `mcp_servers:`

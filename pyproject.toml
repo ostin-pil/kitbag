@@ -19,6 +19,9 @@ classifiers = [
 ]
 dependencies = ["PyYAML>=5.1"]
 
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
 [project.scripts]
 kitbag = "kitbag.cli:main"
 
@@ -32,3 +35,6 @@ packages = ["kitbag"]
 
 [tool.setuptools.package-data]
 kitbag = ["bundles.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
