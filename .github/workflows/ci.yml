@@ -20,13 +20,15 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Install project (editable, with dev extras)
-        run: uv pip install --system -e ".[dev]"
+      - name: Create venv and install (with dev extras)
+        run: |
+          uv venv
+          uv pip install -e ".[dev]"
 
       - name: Run tests
-        run: pytest -q
+        run: .venv/bin/pytest -q
 
       - name: CLI smoke test
         run: |
-          kitbag --version
-          kitbag generate marketplace --dry-run
+          .venv/bin/kitbag --version
+          .venv/bin/kitbag generate marketplace --dry-run
