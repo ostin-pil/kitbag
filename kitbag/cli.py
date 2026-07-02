@@ -247,6 +247,47 @@ def resolve_bundle(bundles, name, seen=None):
     dedupe = lambda xs: list(dict.fromkeys(xs))
     return {"plugins": dedupe(plugins), "mcp": dedupe(mcp)}
 
+def resolve_local(bundles, name, seen=None):
+    """Flatten a bundle's `local:` artifact specs, following `include:`. Deduped."""
+    seen = seen or set()
+    if name in seen: return []
+    seen.add(name)
+    b = bundles.get(name) or die(f"unknown bundle '{name}' (try: kitbag bundle list)")
+    try:
+        specs = [_local.normalize_local_entry(e) for e in (b.get("local") or [])]
+    except ValueError as e:
+        die(f"bundle '{name}': {e}")
+    for inc in b.get("include", []):
+        specs += resolve_local(bundles, inc, seen)
+    out, keys = [], set()
+    for s in specs:
+        k = tuple(s.get(x) for x in _local.LOCAL_SPEC_KEYS)
+        if k not in keys: keys.add(k); out.append(s)
+    return out
+
+def _spec_dest_if_known(spec):
+    """Compute a local spec's install dest without network, when determinable
+    (local path, or remote with explicit type+name). Else None."""
+    src = _local.parse_source(spec["source"])
+    scope = spec.get("scope", "user")
+    base = HOME / ".claude" if scope == "user" else Path.cwd() / ".claude"
+    try:
+        if src.kind == "local":
+            p = Path(src.path)
+            if not p.exists(): return None
+            atype = _local.detect_type(p, spec.get("type"))
+            return _local.install_plan(p, base, atype, spec.get("name"))[0]
+        if spec.get("type") and spec.get("name"):
+            return _local.install_plan(Path(spec["name"]), base, spec["type"],
+                                       spec["name"])[0]
+    except ValueError:
+        return None
+    return None
+
+def _spec_label(spec):
+    return (spec["source"] + (f" :: {spec['path']}" if spec.get("path") else "")
+            + (f" [{spec['type']}]" if spec.get("type") else ""))
+
 # ---- standalone MCP servers --------------------------------------------------
 _mcp_cache = None
 def configured_mcp_names():
@@ -355,6 +396,14 @@ def cmd_bundle_show(cat, a):
             t = d.get("transport") or "stdio"
             print(f" {_mcp_tag(m, configured)} {BOLD}{m:<20}{RST} {DIM}{t}{RST}"
                   + ("" if m in reg else f"  {RED}(not in registry){RST}"))
+    specs = resolve_local(bundles, a.name)
+    if specs:
+        print(f"\n {DIM}local artifacts:{RST}")
+        for s in specs:
+            dest = _spec_dest_if_known(s)
+            tag = (GRN + "●" + RST if dest and dest.exists()
+                   else DIM + "○" + RST if dest else DIM + "?" + RST)
+            print(f" {tag} {_spec_label(s)}")
     print(); print(LEGEND)
 
 def cmd_bundle_diff(cat, a):
@@ -372,41 +421,81 @@ def cmd_bundle_diff(cat, a):
         miss_m = [m for m in res["mcp"] if m not in configured]
         print(f"  {GRN}mcp configured:{RST}    {', '.join(have_m) or '—'}")
         print(f"  {YEL}mcp missing:{RST}       {', '.join(miss_m) or '— (all configured)'}")
-    if miss_p or miss_m:
+    specs = resolve_local(bundles, a.name)
+    miss_l = []
+    if specs:
+        have_l, unknown_l = [], []
+        for s in specs:
+            dest = _spec_dest_if_known(s)
+            (have_l if dest and dest.exists()
+             else unknown_l if dest is None else miss_l).append(_spec_label(s))
+        print(f"  {GRN}local present:{RST}     {', '.join(have_l) or '—'}")
+        print(f"  {YEL}local missing:{RST}     {', '.join(miss_l) or '— (all present)'}")
+        if unknown_l:
+            print(f"  {DIM}local remote (state unknown until fetched): "
+                  f"{', '.join(unknown_l)}{RST}")
+    if miss_p or miss_m or miss_l:
         print(f"\n{DIM}apply: kitbag bundle install {a.name}{RST}")
 
 def cmd_bundle_install(cat, a):
     bundles = load_bundles()
     res = resolve_bundle(bundles, a.name)
+    specs = resolve_local(bundles, a.name)
     reg, configured = mcp_registry(), configured_mcp_names()
     todo_p = res["plugins"] if a.force else [p for p in res["plugins"] if not cat.is_installed(p)]
     todo_m = res["mcp"] if a.force else [m for m in res["mcp"] if m not in configured]
-    if not todo_p and not todo_m:
+    if not todo_p and not todo_m and not specs:
         print(f"{GRN}bundle '{a.name}' already fully applied.{RST}"); return
     print(f"{BOLD}installing bundle '{a.name}'{RST}")
     if todo_p: print(f"  plugins: {', '.join(todo_p)}")
     if todo_m: print(f"  mcp:     {', '.join(todo_m)}")
+    if specs:  print(f"  local:   {', '.join(_spec_label(s) for s in specs)}")
     print()
     rc = 0
-    if todo_p: rc |= _act(cat, todo_p, "install", a.dry_run, note=not todo_m)
+    if todo_p: rc |= _act(cat, todo_p, "install", a.dry_run, note=not todo_m and not specs)
     if todo_m: rc |= _mcp_act(todo_m, "add", a.dry_run, reg)
+    if specs:
+        remote = [s for s in specs if _local.parse_source(s["source"]).kind != "local"]
+        yes = a.yes
+        if remote and not yes and not a.dry_run:
+            yes = _confirm(f"{YEL}bundle '{a.name}' installs {len(remote)} remote "
+                           f"artifact(s) from git; continue?{RST}")
+            if not yes: die("aborted (re-run with --yes)")
+        for s in specs:
+            _install_local_spec(s, force=a.force, dry=a.dry_run, assume_yes=yes,
+                                skip_existing=not a.force)
     sys.exit(rc)
 
 def cmd_bundle_remove(cat, a):
     bundles = load_bundles()
     res = resolve_bundle(bundles, a.name)
+    specs = resolve_local(bundles, a.name)
     reg, configured = mcp_registry(), configured_mcp_names()
     rm_p = [p for p in res["plugins"] if cat.is_installed(p)]
     rm_m = [m for m in res["mcp"] if m in configured]
-    if not rm_p and not rm_m:
-        print(f"{DIM}nothing from bundle '{a.name}' is installed.{RST}"); return
+    rm_l = [(s, d) for s in specs for d in [_spec_dest_if_known(s)] if d and d.exists()]
+    unknown_l = [s for s in specs if _spec_dest_if_known(s) is None]
+    if not rm_p and not rm_m and not rm_l:
+        print(f"{DIM}nothing from bundle '{a.name}' is installed.{RST}")
+        if unknown_l:
+            print(f"{DIM}(remote artifacts can't be matched for removal; use "
+                  f"kitbag local remove <type> <name>){RST}")
+        return
     print(f"{BOLD}removing bundle '{a.name}'{RST}")
     if rm_p: print(f"  plugins: {', '.join(rm_p)}")
     if rm_m: print(f"  mcp:     {', '.join(rm_m)}")
+    if rm_l: print(f"  local:   {', '.join(d.name for _, d in rm_l)}")
     print()
     rc = 0
     if rm_p: rc |= _act(cat, rm_p, "uninstall", a.dry_run, note=not rm_m)
     if rm_m: rc |= _mcp_act(rm_m, "remove", a.dry_run, reg)
+    for _, dest in rm_l:
+        print(f"{CYN}$ rm{RST} {dest}")
+        if not a.dry_run:
+            shutil.rmtree(dest) if dest.is_dir() else dest.unlink()
+    if unknown_l:
+        print(f"{DIM}skipped {len(unknown_l)} remote artifact(s) (name/type unknown); "
+              f"remove via kitbag local remove.{RST}")
     sys.exit(rc)
 
 def cmd_refresh(cat, a):
@@ -493,7 +582,7 @@ def _confirm(prompt):
     except EOFError:
         return False
 
-def _do_install(src, atype, scope, name, force, dry, remote_note=""):
+def _do_install(src, atype, scope, name, force, dry, remote_note="", skip_existing=False):
     if atype == "skill" and not Path(src).is_dir():
         die("skill source must be a directory containing SKILL.md")
     base = HOME / ".claude" if scope == "user" else Path.cwd() / ".claude"
@@ -502,9 +591,11 @@ def _do_install(src, atype, scope, name, force, dry, remote_note=""):
     except ValueError as e:
         die(str(e))
     if dest.exists() and not force:
+        if skip_existing:
+            print(f"  {DIM}skip {atype} {dest.name} (exists){RST}"); return "skipped"
         die(f"{atype} already exists at {dest} (use --force to overwrite)")
     print(f"{BOLD}install {atype}{RST} {DIM}({scope}){RST}: {remote_note}{CYN}->{RST} {dest}")
-    if dry: return
+    if dry: return "dry"
     dest.parent.mkdir(parents=True, exist_ok=True)
     if is_dir:
         if dest.exists(): shutil.rmtree(dest)
@@ -512,48 +603,55 @@ def _do_install(src, atype, scope, name, force, dry, remote_note=""):
     else:
         shutil.copy2(src, dest)
     print(f"{GRN}installed.{RST} {DIM}run /reload-plugins (or restart) to load it.{RST}")
+    return "installed"
 
-def cmd_local_add(cat, a):
-    src = _local.parse_source(a.source)
-    if getattr(a, "ref", None): src.ref = a.ref
-    if getattr(a, "path", None): src.subpath = a.path
+def _remote_where(src):
+    return (f"{src.repo or src.url}" + (f" @ {src.ref}" if src.ref else "")
+            + (f" :: {src.subpath}" if src.subpath else ""))
+
+def _install_local_spec(spec, *, force=False, dry=False, assume_yes=False,
+                        skip_existing=False):
+    """Install one local-artifact spec (dict with source/type/path/ref/name/scope).
+    Shared by `local add` and `bundle install`. Returns a status string."""
+    src = _local.parse_source(spec["source"])
+    if spec.get("ref"): src.ref = spec["ref"]
+    if spec.get("path"): src.subpath = spec["path"]
+    scope, typ, name = spec.get("scope", "user"), spec.get("type"), spec.get("name")
 
     if src.kind == "local":
         p = Path(src.path)
         if not p.exists(): die(f"source not found: {p}")
         try:
-            atype = _local.detect_type(p, a.type)
+            atype = _local.detect_type(p, typ)
         except ValueError as e:
             die(str(e))
-        _do_install(p, atype, a.scope, a.name, a.force, a.dry_run)
-        return
+        return _do_install(p, atype, scope, name, force, dry, skip_existing=skip_existing)
 
-    # remote (git / raw)
-    where = f"{src.repo or src.url}" + (f" @ {src.ref}" if src.ref else "") \
-        + (f" :: {src.subpath}" if src.subpath else "")
-    if src.kind == "raw" and not a.type:
+    where = _remote_where(src)
+    if src.kind == "raw" and not typ:
         die("raw file URL: pass --type (agent/command/output-style) — no path hint")
-    if a.dry_run:
-        print(f"{BOLD}would fetch{RST} {DIM}({src.kind}){RST} {where}")
-        print(f"{DIM}then copy-install into {a.scope} scope "
-              f"(type: {a.type or 'auto-detected after fetch'}).{RST}")
-        return
-    if not a.yes and not _confirm(f"{YEL}Install remote {src.kind}{RST} from {where}?"):
+    if dry:
+        print(f"{BOLD}would fetch{RST} {DIM}({src.kind}){RST} {where} {DIM}-> {scope} "
+              f"(type: {typ or 'auto after fetch'}){RST}")
+        return "dry"
+    if not assume_yes and not _confirm(f"{YEL}Install remote {src.kind}{RST} from {where}?"):
         die("aborted (re-run with --yes to install non-interactively)")
-
     import tempfile
     with tempfile.TemporaryDirectory(prefix="kitbag-") as tmp:
         print(f"{DIM}fetching {where} …{RST}")
         try:
             art = _local.fetch_source(src, tmp)
+            atype = _local.detect_type(art, typ)
         except (RuntimeError, ValueError) as e:
             die(str(e))
-        try:
-            atype = _local.detect_type(art, a.type)
-        except ValueError as e:
-            die(str(e))
-        _do_install(art, atype, a.scope, a.name, a.force, False,
-                    remote_note=f"{DIM}{where}{RST} ")
+        return _do_install(art, atype, scope, name, force, False,
+                           remote_note=f"{DIM}{where}{RST} ", skip_existing=skip_existing)
+
+def cmd_local_add(cat, a):
+    spec = {"source": a.source, "type": a.type, "scope": a.scope, "name": a.name,
+            "ref": getattr(a, "ref", None), "path": getattr(a, "path", None)}
+    spec = {k: v for k, v in spec.items() if v is not None}
+    _install_local_spec(spec, force=a.force, dry=a.dry_run, assume_yes=a.yes)
 
 def cmd_local_remove(cat, a):
     matches = [x for x in _collect_local() if x.type == a.type and x.name == a.name
@@ -630,7 +728,9 @@ def build_parser():
     x = b.add_parser("show", help="show a bundle's plugins"); x.add_argument("name"); x.set_defaults(fn=cmd_bundle_show)
     x = b.add_parser("diff", help="installed vs bundle"); x.add_argument("name"); x.set_defaults(fn=cmd_bundle_diff)
     x = b.add_parser("install", help="install a bundle"); x.add_argument("name")
-    x.add_argument("--force", action="store_true"); x.add_argument("--dry-run", action="store_true"); x.set_defaults(fn=cmd_bundle_install)
+    x.add_argument("--force", action="store_true"); x.add_argument("--dry-run", action="store_true")
+    x.add_argument("--yes", action="store_true", help="skip confirmation for remote local artifacts")
+    x.set_defaults(fn=cmd_bundle_install)
     x = b.add_parser("remove", help="remove a bundle's plugins"); x.add_argument("name")
     x.add_argument("--dry-run", action="store_true"); x.set_defaults(fn=cmd_bundle_remove)
 

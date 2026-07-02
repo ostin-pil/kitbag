@@ -91,6 +91,27 @@ Seeded bundles: `essentials`, `web`, `ios`, `android`, `mobile`, `typescript`,
 `python`, `go`, `rust`, `data`, `security`, `testing`, `quality`,
 `claude-authoring`, and an example curator bundle `karpathy`.
 
+A bundle can also carry **`local:`** — your own skills/commands/agents/output-styles
+(local path or git URL), installed alongside plugins & MCP by one `bundle install`:
+
+```yaml
+  my-workflow:
+    include: [essentials]
+    plugins: [typescript-lsp]
+    mcp: [sentry]
+    local:
+      - ./my-skills/pr-review                 # local skill dir (type auto-detected)
+      - source: owner/agents-repo             # a git repo…
+        path: agents/reviewer.md              # …file within it
+        type: agent
+        ref: main                             # optional branch/tag/sha
+```
+
+`bundle install` installs missing local artifacts (idempotent; remote ones prompt
+unless `--yes`); `bundle show`/`diff` mark each present ●, missing ○, or remote ?;
+`bundle remove` deletes the ones it can resolve. This makes `bundles.yaml` a single
+shareable manifest for a whole workflow — marketplace plugins **and** your own tools.
+
 Point the tool at a different manifest with `KITBAG_MANIFEST=/path/to/file.yaml`.
 
 ## Generate a marketplace (single source)

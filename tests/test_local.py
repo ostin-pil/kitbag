@@ -183,3 +183,14 @@ def test_fetch_source_raw_downloads(tmp_path):
     src = local.Source("raw", url="https://x/y/thing.md", single_file=True)
     got = local.fetch_source(src, tmp_path, clone=lambda *a: None, download=fake_dl)
     assert got == tmp_path / "thing.md" and got.read_text() == "downloaded"
+
+
+def test_normalize_local_entry():
+    assert local.normalize_local_entry("./x") == {"source": "./x"}
+    spec = local.normalize_local_entry(
+        {"source": "o/r", "path": "agents/a.md", "type": "agent", "junk": 1})
+    assert spec == {"source": "o/r", "path": "agents/a.md", "type": "agent"}
+    for bad in ({}, {"path": "x"}, "", {"source": "x", "type": "bogus"},
+                {"source": "x", "scope": "nope"}):
+        with pytest.raises(ValueError):
+            local.normalize_local_entry(bad)

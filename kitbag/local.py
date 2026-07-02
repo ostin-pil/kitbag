@@ -206,6 +206,26 @@ def safe_name(name):
     return name
 
 
+LOCAL_SPEC_KEYS = ("source", "type", "path", "ref", "name", "scope")
+
+def normalize_local_entry(e):
+    """Normalize a bundle `local:` entry (str shorthand or dict) to a spec dict.
+
+    A bare string is treated as `source`. Dicts must carry a `source`; unknown
+    keys are dropped. `type`/`scope` are validated when present.
+    """
+    if isinstance(e, str):
+        e = {"source": e}
+    if not isinstance(e, dict) or not e.get("source"):
+        raise ValueError(f"local entry needs a 'source': {e!r}")
+    spec = {k: e[k] for k in LOCAL_SPEC_KEYS if e.get(k) is not None}
+    if spec.get("type") and spec["type"] not in COPYABLE:
+        raise ValueError(f"local entry type must be one of {', '.join(COPYABLE)}")
+    if spec.get("scope") and spec["scope"] not in ("user", "project"):
+        raise ValueError("local entry scope must be 'user' or 'project'")
+    return spec
+
+
 # ---- remote sources (git URL / raw file) ------------------------------------
 @dataclass
 class Source:

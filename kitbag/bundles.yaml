@@ -31,6 +31,17 @@ mcp_servers:
   #   env: ["API_KEY=replace-me"]
 
 bundles:
+  # A bundle may also carry `local:` — your own skills/commands/agents/output-styles,
+  # installed alongside plugins & MCP by `kitbag bundle install`. Each entry is a
+  # string (a local path or git URL) or a dict with more control:
+  #   local:
+  #     - ./my-skills/pr-review                    # local skill dir (type auto-detected)
+  #     - source: owner/agents-repo                # a git repo…
+  #       path: agents/reviewer.md                 # …file within it
+  #       type: agent                              # required for raw URLs; optional here
+  #       ref: main                                # branch/tag/sha (optional)
+  #       name: my-reviewer                        # install under a different name
+  #       scope: user                              # user (default) or project
   # ---- foundation -----------------------------------------------------------
   essentials:
     description: High-signal defaults useful in almost any repo

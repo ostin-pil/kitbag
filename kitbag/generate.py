@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .cli import resolve_bundle
+from .cli import resolve_bundle, resolve_local
 
 SCHEMA_URL = "https://anthropic.com/claude-code/marketplace.schema.json"
 
@@ -36,6 +36,8 @@ def _install_command(bundle, description, members):
     plist = ", ".join(members["plugins"]) or "—"
     mlist = ", ".join(members["mcp"])
     mcp_line = f"\n- MCP servers: {mlist}" if mlist else ""
+    llist = ", ".join(members.get("local", []))
+    local_line = f"\n- local artifacts: {llist}" if llist else ""
     return f"""---
 description: Install the kitbag "{bundle}" bundle — {description}
 ---
@@ -51,7 +53,7 @@ kitbag bundle install {bundle}
 ```
 
 This bundle contains:
-- plugins: {plist}{mcp_line}
+- plugins: {plist}{mcp_line}{local_line}
 
 `kitbag` installs only what is missing (idempotent). Afterwards, remind the user
 they may need to run `/reload-plugins` (or restart) for new components to load.
@@ -106,6 +108,9 @@ def build_marketplace(manifest, *, name="kitbag-bundles",
         raise ValueError("manifest has no bundles to generate from")
     files = {}
     members = {b: resolve_bundle(bundles, b) for b in bundles}
+    for b in bundles:
+        members[b]["local"] = [s["source"] + (f"::{s['path']}" if s.get("path") else "")
+                               for s in resolve_local(bundles, b)]
 
     if layout == "per-bundle":
         entries = []
