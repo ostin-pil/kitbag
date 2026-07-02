@@ -9,7 +9,7 @@ description = "Explore, install, batch & evaluate Claude Code plugins and MCP se
 readme = "README.md"
 requires-python = ">=3.8"
 license = "MIT"
-authors = [{ name = "kitbag authors", email = "eduvamsterdam@gmail.com" }]
+authors = [{ name = "ostin-pil", email = "eduvamsterdam@gmail.com" }]
 keywords = ["claude", "claude-code", "plugins", "mcp", "cli", "bundles"]
 classifiers = [
     "Environment :: Console",
@@ -26,9 +26,9 @@ dev = ["pytest>=7"]
 kitbag = "kitbag.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/your-org/kitbag"
-Repository = "https://github.com/your-org/kitbag"
-Issues = "https://github.com/your-org/kitbag/issues"
+Homepage = "https://github.com/ostin-pil/kitbag"
+Repository = "https://github.com/ostin-pil/kitbag"
+Issues = "https://github.com/ostin-pil/kitbag/issues"
 
 [tool.setuptools]
 packages = ["kitbag"]

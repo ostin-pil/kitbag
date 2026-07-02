@@ -1,5 +1,7 @@
 # kitbag
 
+[![CI](https://github.com/ostin-pil/kitbag/actions/workflows/ci.yml/badge.svg)](https://github.com/ostin-pil/kitbag/actions/workflows/ci.yml)
+
 One entry point to **explore, (un)install, batch, and evaluate** Claude Code
 instruments — and to share curated **bundles** of them per workflow or curator.
 
