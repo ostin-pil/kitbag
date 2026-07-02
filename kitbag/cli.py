@@ -7,8 +7,10 @@ out to the `claude` CLI only for mutating actions. Curated, shareable bundles
 live in bundles.yaml next to this script (override with $KITBAG_MANIFEST).
 """
 from __future__ import annotations
-import argparse, json, os, subprocess, sys
+import argparse, json, os, shutil, subprocess, sys
 from pathlib import Path
+
+from . import local as _local
 
 HOME = Path.home()
 CATALOG = HOME / ".claude/plugins/plugin-catalog-cache.json"
@@ -421,7 +423,108 @@ def cmd_status(cat, a):
     heavy = sorted(en, key=lambda r: -cat.cost(r)[0])[:3]
     if heavy:
         print(f"  heaviest: " + ", ".join(f"{r['name']}({cat.cost(r)[0]})" for r in heavy))
-    print(f"\n{DIM}explore: kitbag search <q>   bundles: kitbag bundle list{RST}")
+    local_ao = sum(x.always_on for x in _collect_local())
+    if local_ao:
+        print(f"  local artifacts always-on: {local_ao} tok/session")
+        print(f"  {BOLD}true always-on (plugins+local): {total_ao + local_ao}{RST} tok/session")
+    print(f"\n{DIM}explore: kitbag search <q>   bundles: kitbag bundle list   local: kitbag local list{RST}")
+
+# ---- local artifacts (your own skills/commands/agents/output-styles) --------
+def _local_bases():
+    return [(HOME / ".claude", "user"), (Path.cwd() / ".claude", "project")]
+
+def _active_style():
+    s = load_json(SETTINGS, {})
+    return s.get("outputStyle") or s.get("output_style")
+
+def _collect_local():
+    arts = _local.discover(_local_bases(), active_style=_active_style())
+    arts += _local.memory_artifacts([
+        (HOME / ".claude/CLAUDE.md", "user"),
+        (Path.cwd() / "CLAUDE.md", "project"),
+        (Path.cwd() / ".claude/CLAUDE.md", "project"),
+    ])
+    arts += _local.hook_artifacts(load_json(SETTINGS, {}), "user")
+    ps = Path.cwd() / ".claude/settings.json"
+    if ps.exists():
+        arts += _local.hook_artifacts(load_json(ps, {}), "project")
+    return arts
+
+_TYPE_ORDER = {t: i for i, t in enumerate(_local.ALL_TYPES)}
+
+def _print_local(arts):
+    if not arts:
+        print(f"{DIM}(no local artifacts found under ~/.claude or ./.claude){RST}"); return
+    arts = sorted(arts, key=lambda x: (_TYPE_ORDER.get(x.type, 9), x.scope, x.name))
+    print(f"  {DIM}{'type':<13}{'name':<26}{'scope':<8}{'always':>7}{'invoke':>8}  desc{RST}")
+    for x in arts:
+        act = f" {GRN}(active){RST}" if x.active else ""
+        print(f"  {x.type:<13}{BOLD}{x.name[:24]:<24}{RST}  {x.scope:<8}"
+              f"{x.always_on:>7}{fmt_k(x.on_invoke):>8}  {DIM}{x.description[:38]}{RST}{act}")
+
+def cmd_local_list(cat, a):
+    arts = _collect_local()
+    if a.type: arts = [x for x in arts if x.type == a.type]
+    if a.scope: arts = [x for x in arts if x.scope == a.scope]
+    print(f"{BOLD}{len(arts)} local artifact(s){RST}  {DIM}(token cost is estimated){RST}\n")
+    _print_local(arts)
+    print(f"\n{DIM}always-on loads every session; invoke is paid when fired. "
+          f"copy-install: kitbag local add <path>{RST}")
+
+def cmd_local_eval(cat, a):
+    arts = _collect_local()
+    ao = sum(x.always_on for x in arts)
+    oi = sum(x.on_invoke for x in arts)
+    top = sorted((x for x in arts if x.always_on), key=lambda x: -x.always_on)[:5]
+    print(f"{BOLD}local token budget{RST}  {DIM}({len(arts)} artifacts, estimated){RST}\n")
+    print(f"  always-on total: {BOLD}{ao}{RST} tok/session")
+    print(f"  on-invoke total: {fmt_k(oi)} tok (paid per fire)")
+    if top:
+        print(f"\n  {DIM}heaviest always-on:{RST}")
+        for x in top:
+            print(f"    {x.always_on:>5}  {x.type}/{x.name}")
+    print(f"\n  {DIM}combine with plugins: kitbag status{RST}")
+
+def cmd_local_add(cat, a):
+    src = Path(a.source).expanduser()
+    if not src.exists(): die(f"source not found: {src}")
+    try:
+        atype = _local.detect_type(src, a.type)
+    except ValueError as e:
+        die(str(e))
+    if atype == "skill" and not src.is_dir():
+        die("skill source must be a directory containing SKILL.md")
+    base = HOME / ".claude" if a.scope == "user" else Path.cwd() / ".claude"
+    dest, is_dir = _local.install_plan(src, base, atype, a.name)
+    if dest.exists() and not a.force:
+        die(f"{atype} already exists at {dest} (use --force to overwrite)")
+    print(f"{BOLD}install {atype}{RST} {DIM}({a.scope}){RST}: {src} {CYN}->{RST} {dest}")
+    if a.dry_run: return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if is_dir:
+        if dest.exists(): shutil.rmtree(dest)
+        shutil.copytree(src, dest)
+    else:
+        shutil.copy2(src, dest)
+    print(f"{GRN}installed.{RST} {DIM}run /reload-plugins (or restart) to load it.{RST}")
+
+def cmd_local_remove(cat, a):
+    matches = [x for x in _collect_local() if x.type == a.type and x.name == a.name
+               and (a.scope is None or x.scope == a.scope)]
+    if not matches:
+        die(f"no local {a.type} named '{a.name}'" + (f" in {a.scope}" if a.scope else ""))
+    if len(matches) > 1:
+        die(f"'{a.name}' matches {a.type} in multiple scopes; pass --scope user|project")
+    art = matches[0]
+    if art.type not in _local.COPYABLE:
+        die(f"{art.type} is read-only in kitbag; edit {art.path} yourself")
+    p = Path(art.path)
+    target = p.parent if art.type == "skill" else p
+    print(f"{BOLD}remove {art.type}{RST} {DIM}({art.scope}){RST}: {target}")
+    if a.dry_run: return
+    if art.type == "skill": shutil.rmtree(target)
+    else: p.unlink()
+    print(f"{GRN}removed.{RST}")
 
 # ---- argparse ----------------------------------------------------------------
 def build_parser():
@@ -483,6 +586,28 @@ def build_parser():
     x.add_argument("--force", action="store_true"); x.add_argument("--dry-run", action="store_true"); x.set_defaults(fn=cmd_bundle_install)
     x = b.add_parser("remove", help="remove a bundle's plugins"); x.add_argument("name")
     x.add_argument("--dry-run", action="store_true"); x.set_defaults(fn=cmd_bundle_remove)
+
+    l = sub.add_parser("local", help="your own skills/commands/agents/output-styles (+ memory/hooks)").add_subparsers(dest="lcmd", required=True)
+    x = l.add_parser("list", help="list local artifacts with estimated token cost")
+    x.add_argument("--type", choices=_local.ALL_TYPES)
+    x.add_argument("--scope", choices=["user", "project"])
+    x.set_defaults(fn=cmd_local_list, needs_catalog=False)
+    x = l.add_parser("eval", help="token budget for local artifacts")
+    x.set_defaults(fn=cmd_local_eval, needs_catalog=False)
+    x = l.add_parser("add", help="copy-install a skill dir / command|agent|output-style .md")
+    x.add_argument("source", help="path to a skill directory or a .md file")
+    x.add_argument("--type", choices=list(_local.COPYABLE), help="override auto-detected type")
+    x.add_argument("--scope", choices=["user", "project"], default="user")
+    x.add_argument("--name", help="install under a different name")
+    x.add_argument("--force", action="store_true", help="overwrite if it exists")
+    x.add_argument("--dry-run", action="store_true")
+    x.set_defaults(fn=cmd_local_add, needs_catalog=False)
+    x = l.add_parser("remove", help="remove a local artifact")
+    x.add_argument("type", choices=list(_local.COPYABLE))
+    x.add_argument("name")
+    x.add_argument("--scope", choices=["user", "project"])
+    x.add_argument("--dry-run", action="store_true")
+    x.set_defaults(fn=cmd_local_remove, needs_catalog=False)
 
     g = sub.add_parser("generate", help="generate distributable artifacts from the manifest").add_subparsers(dest="gcmd", required=True)
     x = g.add_parser("marketplace", help="emit a Claude Code marketplace repo from bundles")

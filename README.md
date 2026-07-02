@@ -144,6 +144,36 @@ bundles:
 plugins and MCP servers together. Plugin-provided MCP servers (the `plugin:…`
 entries in `claude mcp list`) are managed via their plugin and ignored here.
 
+## Local artifacts (your own skills/commands/agents)
+
+Beyond marketplace plugins, kitbag inventories the instruments you author yourself
+under `~/.claude/` (user scope) and `./.claude/` (project scope), and **estimates
+their token cost** (there's no catalog for these, so it's a ~4-chars/token estimate):
+
+```bash
+kitbag local list                 # everything, with always-on / on-invoke cost
+kitbag local list --type skill    # filter by type or --scope user|project
+kitbag local eval                 # local token budget, heaviest always-on
+kitbag local add ./my-skill/      # copy-install a skill dir (auto-detects type)
+kitbag local add ./review.md --type agent --scope project
+kitbag local remove skill my-skill
+```
+
+`kitbag status` now reports the **true** always-on budget = plugins + local.
+
+| Type           | Always-on cost                    | `add` |
+|----------------|-----------------------------------|:-----:|
+| skill          | `name` + `description` frontmatter | ✅ dir |
+| agent          | `name` + `description` frontmatter | ✅ .md |
+| command        | 0 (body loads on invoke)           | ✅ .md |
+| output-style   | full body, only when it's active   | ✅ .md |
+| memory (CLAUDE.md) | full body (loads every session) | read-only |
+| hook           | 0 (behavioural, not context)       | read-only |
+
+`add` auto-detects type from the source (a directory with `SKILL.md` → skill; a
+`.md` under `agents/`, `commands/`, `output-styles/` → that type; else pass `--type`).
+`memory` and `hooks` are inventoried but not mutated by kitbag in v1.
+
 ## Architecture
 
 | Concern        | Source                                              |
@@ -151,14 +181,18 @@ entries in `claude mcp list`) are managed via their plugin and ignored here.
 | explore / eval | `~/.claude/plugins/plugin-catalog-cache.json` (offline) |
 | plugin state   | `~/.claude/settings.json`, `installed_plugins.json` |
 | mcp state      | `claude mcp list` (parsed; `plugin:`-prefixed excluded) |
-| actions        | `claude plugin …`, `claude mcp add/remove`, `marketplace update` |
+| local artifacts| filesystem scan of `~/.claude` & `./.claude` (+ CLAUDE.md) |
+| actions        | `claude plugin …`, `claude mcp add/remove`; local = file copy |
 
 ## Scope & roadmap
 
 In Claude Code the **plugin** is the installable unit — it bundles skills, commands,
-agents, hooks, MCP, and LSP servers — and standalone **MCP servers** are now wired in
-too (registry + bundle `mcp:` keys). Remaining extension, not yet wired:
+agents, hooks, MCP, and LSP servers — standalone **MCP servers** are wired in (registry
++ bundle `mcp:` keys), and your own **local artifacts** are now discoverable, costed,
+and copy-installable (`kitbag local`). Still open:
 
-- local file-based **skills/commands/agents/rules** discovery & scaffolding
+- `local add` from a **git URL** (v1 is local-path copy only)
+- managing **memory/hooks** mutations (v1 lists them read-only)
+- a community **bundle registry** (`kitbag registry add` / `bundle pull <url>`)
 
 The manifest format leaves room for these; contributions welcome.
