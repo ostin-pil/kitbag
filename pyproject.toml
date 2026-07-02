@@ -7,7 +7,7 @@ name = "kitbag"
 version = "0.1.0"
 description = "Explore, install, batch & evaluate Claude Code plugins and MCP servers — with curated, shareable bundles."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 license = "MIT"
 authors = [{ name = "ostin-pil", email = "eduvamsterdam@gmail.com" }]
 keywords = ["claude", "claude-code", "plugins", "mcp", "cli", "bundles"]
