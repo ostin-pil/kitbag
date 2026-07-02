@@ -113,3 +113,73 @@ def test_install_plan_destinations(tmp_path):
     assert dest == base / "commands/deploy.md" and is_dir is False
     dest, _ = local.install_plan(Path("/src/x.md"), base, "agent", name="custom")
     assert dest == base / "agents/custom.md"
+
+
+def test_safe_name_rejects_traversal():
+    for bad in ("../evil", "a/b", "", ".hidden", "x/../y"):
+        with pytest.raises(ValueError):
+            local.safe_name(bad)
+    assert local.safe_name("good-name") == "good-name"
+
+
+@pytest.mark.parametrize("src,kind,repo,ref,subpath,single", [
+    ("https://github.com/o/r", "git", "https://github.com/o/r.git", None, None, False),
+    ("https://github.com/o/r.git", "git", "https://github.com/o/r.git", None, None, False),
+    ("https://github.com/o/r/tree/main/skills/foo", "git",
+     "https://github.com/o/r.git", "main", "skills/foo", False),
+    ("https://github.com/o/r/blob/dev/agents/a.md", "git",
+     "https://github.com/o/r.git", "dev", "agents/a.md", True),
+    ("git@github.com:o/r.git", "git", "git@github.com:o/r.git", None, None, False),
+    ("o/r", "git", "https://github.com/o/r.git", None, None, False),
+    ("o/r/tree/v1/commands/c.md", "git",
+     "https://github.com/o/r.git", "v1", "commands/c.md", False),
+])
+def test_parse_source_git(src, kind, repo, ref, subpath, single):
+    s = local.parse_source(src, exists=False)
+    assert (s.kind, s.repo, s.ref, s.subpath, s.single_file) == \
+        (kind, repo, ref, subpath, single)
+
+
+@pytest.mark.parametrize("url", [
+    "https://raw.githubusercontent.com/o/r/main/agents/a.md",
+    "https://gist.githubusercontent.com/u/abc/raw/x.md",
+    "https://example.com/some/skill.md",
+])
+def test_parse_source_raw(url):
+    s = local.parse_source(url, exists=False)
+    assert s.kind == "raw" and s.url == url and s.single_file is True
+
+
+def test_parse_source_local_and_fragment(tmp_path):
+    p = tmp_path / "thing"
+    p.mkdir()
+    assert local.parse_source(str(p)).kind == "local"
+    s = local.parse_source("https://github.com/o/r.git#ref=dev&path=skills/x",
+                           exists=False)
+    assert s.kind == "git" and s.ref == "dev" and s.subpath == "skills/x"
+
+
+def test_fetch_source_git_with_subpath(tmp_path):
+    def fake_clone(repo, ref, dest):
+        d = Path(dest) / "skills" / "foo"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text("x")
+    src = local.Source("git", repo="r", subpath="skills/foo")
+    got = local.fetch_source(src, tmp_path, clone=fake_clone,
+                             download=lambda *a: None)
+    assert got == tmp_path / "repo/skills/foo" and (got / "SKILL.md").exists()
+
+
+def test_fetch_source_git_missing_subpath_raises(tmp_path):
+    src = local.Source("git", repo="r", subpath="nope")
+    with pytest.raises(ValueError):
+        local.fetch_source(src, tmp_path, clone=lambda *a: (tmp_path / "repo").mkdir(),
+                           download=lambda *a: None)
+
+
+def test_fetch_source_raw_downloads(tmp_path):
+    def fake_dl(url, dest):
+        Path(dest).write_text("downloaded")
+    src = local.Source("raw", url="https://x/y/thing.md", single_file=True)
+    got = local.fetch_source(src, tmp_path, clone=lambda *a: None, download=fake_dl)
+    assert got == tmp_path / "thing.md" and got.read_text() == "downloaded"

@@ -485,21 +485,26 @@ def cmd_local_eval(cat, a):
             print(f"    {x.always_on:>5}  {x.type}/{x.name}")
     print(f"\n  {DIM}combine with plugins: kitbag status{RST}")
 
-def cmd_local_add(cat, a):
-    src = Path(a.source).expanduser()
-    if not src.exists(): die(f"source not found: {src}")
+def _confirm(prompt):
+    if not sys.stdin.isatty():
+        return False
     try:
-        atype = _local.detect_type(src, a.type)
+        return input(f"{prompt} [y/N] ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+def _do_install(src, atype, scope, name, force, dry, remote_note=""):
+    if atype == "skill" and not Path(src).is_dir():
+        die("skill source must be a directory containing SKILL.md")
+    base = HOME / ".claude" if scope == "user" else Path.cwd() / ".claude"
+    try:
+        dest, is_dir = _local.install_plan(src, base, atype, name)
     except ValueError as e:
         die(str(e))
-    if atype == "skill" and not src.is_dir():
-        die("skill source must be a directory containing SKILL.md")
-    base = HOME / ".claude" if a.scope == "user" else Path.cwd() / ".claude"
-    dest, is_dir = _local.install_plan(src, base, atype, a.name)
-    if dest.exists() and not a.force:
+    if dest.exists() and not force:
         die(f"{atype} already exists at {dest} (use --force to overwrite)")
-    print(f"{BOLD}install {atype}{RST} {DIM}({a.scope}){RST}: {src} {CYN}->{RST} {dest}")
-    if a.dry_run: return
+    print(f"{BOLD}install {atype}{RST} {DIM}({scope}){RST}: {remote_note}{CYN}->{RST} {dest}")
+    if dry: return
     dest.parent.mkdir(parents=True, exist_ok=True)
     if is_dir:
         if dest.exists(): shutil.rmtree(dest)
@@ -507,6 +512,48 @@ def cmd_local_add(cat, a):
     else:
         shutil.copy2(src, dest)
     print(f"{GRN}installed.{RST} {DIM}run /reload-plugins (or restart) to load it.{RST}")
+
+def cmd_local_add(cat, a):
+    src = _local.parse_source(a.source)
+    if getattr(a, "ref", None): src.ref = a.ref
+    if getattr(a, "path", None): src.subpath = a.path
+
+    if src.kind == "local":
+        p = Path(src.path)
+        if not p.exists(): die(f"source not found: {p}")
+        try:
+            atype = _local.detect_type(p, a.type)
+        except ValueError as e:
+            die(str(e))
+        _do_install(p, atype, a.scope, a.name, a.force, a.dry_run)
+        return
+
+    # remote (git / raw)
+    where = f"{src.repo or src.url}" + (f" @ {src.ref}" if src.ref else "") \
+        + (f" :: {src.subpath}" if src.subpath else "")
+    if src.kind == "raw" and not a.type:
+        die("raw file URL: pass --type (agent/command/output-style) — no path hint")
+    if a.dry_run:
+        print(f"{BOLD}would fetch{RST} {DIM}({src.kind}){RST} {where}")
+        print(f"{DIM}then copy-install into {a.scope} scope "
+              f"(type: {a.type or 'auto-detected after fetch'}).{RST}")
+        return
+    if not a.yes and not _confirm(f"{YEL}Install remote {src.kind}{RST} from {where}?"):
+        die("aborted (re-run with --yes to install non-interactively)")
+
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="kitbag-") as tmp:
+        print(f"{DIM}fetching {where} …{RST}")
+        try:
+            art = _local.fetch_source(src, tmp)
+        except (RuntimeError, ValueError) as e:
+            die(str(e))
+        try:
+            atype = _local.detect_type(art, a.type)
+        except ValueError as e:
+            die(str(e))
+        _do_install(art, atype, a.scope, a.name, a.force, False,
+                    remote_note=f"{DIM}{where}{RST} ")
 
 def cmd_local_remove(cat, a):
     matches = [x for x in _collect_local() if x.type == a.type and x.name == a.name
@@ -594,11 +641,15 @@ def build_parser():
     x.set_defaults(fn=cmd_local_list, needs_catalog=False)
     x = l.add_parser("eval", help="token budget for local artifacts")
     x.set_defaults(fn=cmd_local_eval, needs_catalog=False)
-    x = l.add_parser("add", help="copy-install a skill dir / command|agent|output-style .md")
-    x.add_argument("source", help="path to a skill directory or a .md file")
+    x = l.add_parser("add", help="copy-install a skill/command/agent/output-style from a path OR git URL")
+    x.add_argument("source", help="local path, git URL, github tree/blob URL, "
+                   "owner/repo shorthand, or a raw .md URL")
     x.add_argument("--type", choices=list(_local.COPYABLE), help="override auto-detected type")
     x.add_argument("--scope", choices=["user", "project"], default="user")
     x.add_argument("--name", help="install under a different name")
+    x.add_argument("--ref", help="git branch/tag/sha (remote sources)")
+    x.add_argument("--path", help="path within the repo (remote sources)")
+    x.add_argument("--yes", action="store_true", help="skip the remote-install confirmation")
     x.add_argument("--force", action="store_true", help="overwrite if it exists")
     x.add_argument("--dry-run", action="store_true")
     x.set_defaults(fn=cmd_local_add, needs_catalog=False)

@@ -159,6 +159,18 @@ kitbag local add ./review.md --type agent --scope project
 kitbag local remove skill my-skill
 ```
 
+`add` also installs from **git**: pass a repo URL, a github `tree`/`blob` URL, an
+`owner/repo` shorthand, or a raw `.md` URL. kitbag shallow-clones (or downloads),
+copy-installs the artifact, and cleans up. Remote installs ask for confirmation
+(`--yes` to skip):
+
+```bash
+kitbag local add owner/skills-repo --path skills/pr-review        # subdir of a repo
+kitbag local add https://github.com/owner/repo/blob/main/agents/x.md --yes
+kitbag local add https://example.com/style.md --type output-style  # raw url needs --type
+kitbag local add owner/repo --ref v2 --path commands/deploy.md
+```
+
 `kitbag status` now reports the **true** always-on budget = plugins + local.
 
 | Type           | Always-on cost                    | `add` |

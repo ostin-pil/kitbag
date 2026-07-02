@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse, parse_qs
 
 # file/dir-based types kitbag can copy-install; the rest are read-only in v1.
 COPYABLE = ("skill", "command", "agent", "output-style")
@@ -189,10 +190,123 @@ def detect_type(src: Path, explicit=None):
 def install_plan(src: Path, base: Path, atype, name=None):
     """Return (dest_path, is_dir) where the artifact should be copied. Pure."""
     src = Path(src)
-    name = name or (src.name if atype == "skill" else src.stem)
+    name = safe_name(name or (src.name if atype == "skill" else src.stem))
     base = Path(base)
     if atype == "skill":
         return base / "skills" / name, True
     sub = {"command": "commands", "agent": "agents",
            "output-style": "output-styles"}[atype]
     return base / sub / f"{name}.md", False
+
+
+def safe_name(name):
+    """Guard against path traversal in a derived artifact name."""
+    if not name or "/" in name or "\\" in name or name.startswith(".") or ".." in name:
+        raise ValueError(f"unsafe artifact name: {name!r}")
+    return name
+
+
+# ---- remote sources (git URL / raw file) ------------------------------------
+@dataclass
+class Source:
+    kind: str                 # local | git | raw
+    path: str = ""            # local: filesystem path
+    repo: str = ""            # git: clone URL
+    ref: str | None = None    # git: branch/tag/sha
+    subpath: str | None = None  # git: path within repo
+    single_file: bool = False  # git blob / raw: a single .md
+    url: str = ""             # raw: download URL
+
+
+def _is_url(s):
+    return s.startswith(("http://", "https://", "git@", "ssh://")) or s.endswith(".git")
+
+
+def parse_source(source, *, exists=None):
+    """Classify an `add` source into local / git / raw. Pure (network-free).
+
+    Handles: local paths; github.com tree|blob URLs; raw.githubusercontent /
+    gist raw / generic *.md URLs; plain git URLs (https, git@, ssh, *.git);
+    `owner/repo[/tree|blob/ref/subpath]` shorthand; and a `#ref=..&path=..`
+    fragment on any URL. `exists` overrides the local-path check (for tests).
+    """
+    raw = source.strip()
+    s = raw
+    is_local = exists if exists is not None else Path(s).expanduser().exists()
+    if is_local and not _is_url(s):
+        return Source("local", path=str(Path(s).expanduser()))
+
+    # split off a #ref=..&path=.. fragment
+    frag_ref = frag_path = None
+    if "#" in s:
+        s, frag = s.split("#", 1)
+        q = parse_qs(frag)
+        frag_ref = (q.get("ref") or [None])[0]
+        frag_path = (q.get("path") or [None])[0]
+
+    # github.com tree/blob (clone + copy subpath so type auto-detects)
+    m = re.match(r"https?://github\.com/([^/]+/[^/]+?)(?:\.git)?"
+                 r"(?:/(tree|blob)/([^/]+)/(.+?))?/?$", s)
+    if m:
+        return Source("git", repo=f"https://github.com/{m.group(1)}.git",
+                      ref=m.group(3) or frag_ref, subpath=m.group(4) or frag_path,
+                      single_file=m.group(2) == "blob")
+
+    # raw single-file download (raw.githubusercontent, gist raw, generic *.md)
+    low = s.lower()
+    if re.match(r"https?://", s) and (low.startswith("https://raw.")
+                                      or "/raw/" in low or low.endswith(".md")):
+        return Source("raw", url=s, single_file=True)
+
+    # plain git URL
+    if _is_url(s):
+        return Source("git", repo=s, ref=frag_ref, subpath=frag_path)
+
+    # owner/repo[/tree|blob/ref/subpath] shorthand
+    m = re.match(r"^([\w.-]+/[\w.-]+)(?:/(tree|blob)/([^/]+)/(.+))?$", s)
+    if m and not is_local:
+        return Source("git", repo=f"https://github.com/{m.group(1)}.git",
+                      ref=m.group(3) or frag_ref, subpath=m.group(4) or frag_path,
+                      single_file=m.group(2) == "blob")
+
+    return Source("local", path=str(Path(raw).expanduser()))
+
+
+def _git_clone(repo, ref, dest):  # impure; monkeypatched in tests
+    import subprocess
+    argv = ["git", "clone", "--depth", "1"] + (["--branch", ref] if ref else []) \
+        + [repo, str(dest)]
+    r = subprocess.run(argv, capture_output=True, text=True, timeout=180)
+    if r.returncode != 0:
+        raise RuntimeError(f"git clone failed: {r.stderr.strip()[:200]}")
+
+
+def _download(url, dest):  # impure; monkeypatched in tests
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "kitbag"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        data = r.read(5_000_000)  # 5 MB cap
+    Path(dest).write_bytes(data)
+
+
+def fetch_source(src: Source, workdir, *, clone=None, download=None):
+    """Materialize a remote Source under workdir; return the local artifact path.
+    `clone`/`download` are injectable so orchestration is testable without network."""
+    clone = clone or _git_clone
+    download = download or _download
+    work = Path(workdir)
+    if src.kind == "local":
+        return Path(src.path)
+    if src.kind == "raw":
+        name = Path(urlparse(src.url).path).name or "artifact.md"
+        dest = work / name
+        download(src.url, dest)
+        return dest
+    if src.kind == "git":
+        repo_dir = work / "repo"
+        clone(src.repo, src.ref, repo_dir)
+        target = repo_dir / src.subpath if src.subpath else repo_dir
+        if not Path(target).exists():
+            raise ValueError(f"path '{src.subpath}' not found in {src.repo}")
+        return Path(target)
+    raise ValueError(f"unknown source kind: {src.kind}")
