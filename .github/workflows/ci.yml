@@ -25,8 +25,8 @@ jobs:
           uv venv
           uv pip install -e ".[dev]"
 
-      - name: Run tests
-        run: .venv/bin/pytest -q
+      - name: Run tests (with coverage gate)
+        run: .venv/bin/pytest -q --cov=kitbag --cov-report=term-missing --cov-fail-under=78
 
       - name: CLI smoke test
         run: |

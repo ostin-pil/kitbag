@@ -20,7 +20,7 @@ classifiers = [
 dependencies = ["PyYAML>=5.1"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "pytest-cov>=4"]
 
 [project.scripts]
 kitbag = "kitbag.cli:main"
@@ -38,3 +38,11 @@ kitbag = ["bundles.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["kitbag"]
+
+[tool.coverage.report]
+# main()/argparse wiring and the real network clone are covered via injection
+# and live smoke, not unit tests; keep the gate below 100 with headroom.
+exclude_lines = ["pragma: no cover", "if __name__ == .__main__.:"]
