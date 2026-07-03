@@ -105,6 +105,36 @@ def test_detect_type_errors(tmp_path):
         local.detect_type(tmp_path / "x.md", explicit="bogus")
 
 
+def test_enclosing_plugin_detects_and_names(tmp_path):
+    # a plugin tree: <plugin>/.claude-plugin/plugin.json + <plugin>/skills/foo
+    plug = tmp_path / "lifecycle-kit"
+    (plug / ".claude-plugin").mkdir(parents=True)
+    (plug / ".claude-plugin/plugin.json").write_text('{"name": "lifecycle-kit"}')
+    skill = plug / "skills/foo"
+    skill.mkdir(parents=True)
+    assert local.enclosing_plugin(skill) == "lifecycle-kit"
+    # a .md inside the same plugin
+    cmd = plug / "commands/bar.md"
+    cmd.parent.mkdir(parents=True)
+    cmd.write_text("x")
+    assert local.enclosing_plugin(cmd) == "lifecycle-kit"
+
+
+def test_enclosing_plugin_none_for_standalone(tmp_path):
+    lone = tmp_path / "skills/solo"
+    lone.mkdir(parents=True)
+    assert local.enclosing_plugin(lone) is None
+
+
+def test_enclosing_plugin_falls_back_to_dirname_on_bad_json(tmp_path):
+    plug = tmp_path / "myplug"
+    (plug / ".claude-plugin").mkdir(parents=True)
+    (plug / ".claude-plugin/plugin.json").write_text("{ not json")
+    inside = plug / "skills/x"
+    inside.mkdir(parents=True)
+    assert local.enclosing_plugin(inside) == "myplug"
+
+
 def test_install_plan_destinations(tmp_path):
     base = tmp_path / ".claude"
     dest, is_dir = local.install_plan(Path("/src/greet"), base, "skill")

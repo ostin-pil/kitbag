@@ -167,6 +167,25 @@ def hook_artifacts(settings: dict, scope: str):
 
 
 # ---- install (copy) ----------------------------------------------------------
+def enclosing_plugin(path, *, max_up=6):
+    """If `path` lives inside a Claude Code plugin, return that plugin's name
+    (from .claude-plugin/plugin.json), else None. Walks up a bounded number of
+    parent directories. Used to warn that a standalone skill/command copy leaves
+    behind the plugin's other components (hooks, templates, sibling skills)."""
+    p = Path(path)
+    for i, parent in enumerate([p, *p.parents]):
+        if i > max_up:
+            break
+        manifest = parent / ".claude-plugin" / "plugin.json"
+        if manifest.is_file():
+            try:
+                import json
+                return json.loads(manifest.read_text()).get("name") or parent.name
+            except Exception:
+                return parent.name
+    return None
+
+
 def detect_type(src: Path, explicit=None):
     """Infer artifact type from a source path. Returns one of COPYABLE or raises."""
     src = Path(src)

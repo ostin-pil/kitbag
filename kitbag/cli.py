@@ -643,6 +643,11 @@ def _do_install(src, atype, scope, name, force, dry, remote_note="", skip_existi
             print(f"  {DIM}skip {atype} {dest.name} (exists){RST}"); return "skipped"
         die(f"{atype} already exists at {dest} (use --force to overwrite)")
     print(f"{BOLD}install {atype}{RST} {DIM}({scope}){RST}: {remote_note}{CYN}->{RST} {dest}")
+    plug = _local.enclosing_plugin(src)
+    if plug:
+        print(f"  {YEL}note:{RST} {DIM}part of plugin '{plug}' — copying just this "
+              f"{atype}; its hooks/templates/other components aren't included. For the "
+              f"full plugin, add its marketplace + `claude plugin install {plug}`.{RST}")
     if dry: return "dry"
     dest.parent.mkdir(parents=True, exist_ok=True)
     if is_dir:
