@@ -292,11 +292,36 @@ def parse_source(source, *, exists=None):
     return Source("local", path=str(Path(raw).expanduser()))
 
 
+def _is_github(repo):
+    host = (urlparse(repo).hostname or "").lower()
+    return host == "github.com" or repo.startswith(("git@github.com", "ssh://git@github.com"))
+
+
+def clone_command(repo, ref, dest, *, gh_available=False):
+    """Build (argv, env_overrides) for a non-hanging shallow clone. Pure/testable.
+
+    Resets inherited credential helpers first — under WSL the global Windows
+    credential-manager helper pops a GUI and hangs the clone forever. Routes
+    github.com auth through `gh` when it's available (so private repos clone),
+    and sets GIT_TERMINAL_PROMPT=0 so any remaining auth need fails fast instead
+    of blocking on a prompt.
+    """
+    cfg = ["-c", "credential.helper="]           # clear inherited (hanging) helpers
+    if gh_available and _is_github(repo):
+        cfg += ["-c", "credential.helper=!gh auth git-credential"]
+    argv = ["git", *cfg, "clone", "--depth", "1"]
+    if ref:
+        argv += ["--branch", ref]
+    argv += [repo, str(dest)]
+    return argv, {"GIT_TERMINAL_PROMPT": "0"}
+
+
 def _git_clone(repo, ref, dest):  # impure; monkeypatched in tests
-    import subprocess
-    argv = ["git", "clone", "--depth", "1"] + (["--branch", ref] if ref else []) \
-        + [repo, str(dest)]
-    r = subprocess.run(argv, capture_output=True, text=True, timeout=180)
+    import os, shutil, subprocess
+    argv, env_over = clone_command(repo, ref, dest,
+                                   gh_available=shutil.which("gh") is not None)
+    r = subprocess.run(argv, capture_output=True, text=True, timeout=180,
+                       env={**os.environ, **env_over})
     if r.returncode != 0:
         raise RuntimeError(f"git clone failed: {r.stderr.strip()[:200]}")
 

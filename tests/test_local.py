@@ -177,6 +177,40 @@ def test_fetch_source_git_missing_subpath_raises(tmp_path):
                            download=lambda *a: None)
 
 
+def test_clone_command_resets_helper_and_disables_prompt():
+    argv, env = local.clone_command("https://github.com/o/r.git", None, "/dest")
+    # inherited credential helpers reset (avoids WSL cred-manager hang)
+    assert "-c" in argv and "credential.helper=" in argv
+    # -c options come before the clone subcommand
+    assert argv.index("clone") > argv.index("credential.helper=")
+    assert argv[:2] == ["git", "-c"] and "--depth" in argv
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+
+
+def test_clone_command_uses_gh_helper_for_github_when_available():
+    argv, _ = local.clone_command("https://github.com/o/r.git", None, "/d",
+                                  gh_available=True)
+    assert "credential.helper=!gh auth git-credential" in argv
+    # ssh github form too
+    argv2, _ = local.clone_command("git@github.com:o/r.git", None, "/d",
+                                   gh_available=True)
+    assert "credential.helper=!gh auth git-credential" in argv2
+
+
+def test_clone_command_no_gh_helper_for_non_github_or_no_gh():
+    argv, _ = local.clone_command("https://gitlab.com/o/r.git", None, "/d",
+                                  gh_available=True)
+    assert "credential.helper=!gh auth git-credential" not in argv
+    argv2, _ = local.clone_command("https://github.com/o/r.git", None, "/d",
+                                   gh_available=False)
+    assert "credential.helper=!gh auth git-credential" not in argv2
+
+
+def test_clone_command_branch():
+    argv, _ = local.clone_command("https://github.com/o/r.git", "v2", "/d")
+    assert argv[argv.index("--branch") + 1] == "v2"
+
+
 def test_fetch_source_raw_downloads(tmp_path):
     def fake_dl(url, dest):
         Path(dest).write_text("downloaded")
