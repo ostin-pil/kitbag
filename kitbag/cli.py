@@ -17,8 +17,8 @@ CATALOG = HOME / ".claude/plugins/plugin-catalog-cache.json"
 SETTINGS = HOME / ".claude/settings.json"
 INSTALLED = HOME / ".claude/plugins/installed_plugins.json"
 DEFAULT_MARKET = "claude-plugins-official"
-BUNDLES = Path(os.environ.get("KITBAG_MANIFEST",
-                              Path(__file__).resolve().parent / "bundles.yaml"))
+PACKAGED = Path(__file__).resolve().parent / "bundles.yaml"   # built-in base layer
+BUNDLES = None   # explicit overlay path (set by --manifest); None = auto-detect
 # token-cost model preference (catalog may not carry the very newest model)
 MODEL_PREF = ["claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-4-6"]
 SCHEMA = 1  # manifest schema version this CLI understands
@@ -212,22 +212,70 @@ def cmd_eval(cat, a):
     print(f"\n  {DIM}always-on is added to EVERY session; on-invoke is paid per fire.{RST}")
 
 # ---- manifest (bundles + standalone MCP registry) ---------------------------
+# The packaged bundles.yaml is the base layer. A personal manifest overlays on
+# top of it (its bundles / mcp_servers win by name), so you keep the built-ins
+# and add your own. Precedence for the overlay: --manifest > $KITBAG_MANIFEST >
+# ~/.config/kitbag/bundles.yaml (auto-loaded if present). A personal manifest
+# can set `extends_defaults: false` to replace the built-ins entirely.
 _manifest_cache = None
-def load_manifest():
-    global _manifest_cache
-    if _manifest_cache is not None: return _manifest_cache
-    if not BUNDLES.exists():
-        die(f"no manifest at {BUNDLES} (set $KITBAG_MANIFEST or use --manifest)")
+
+def _read_manifest(path):
     try:
         import yaml
     except ImportError:
         die("PyYAML not available; install it (pip install pyyaml)")
-    data = yaml.safe_load(BUNDLES.read_text()) or {}
+    try:
+        data = yaml.safe_load(Path(path).read_text()) or {}
+    except FileNotFoundError:
+        die(f"no manifest at {path} (check --manifest / $KITBAG_MANIFEST)")
     sv = data.get("schema")
     if sv is not None and sv > SCHEMA:
         print(f"{YEL}warning:{RST} manifest schema v{sv} is newer than kitbag "
               f"(v{SCHEMA}); some fields may be ignored. Upgrade: pip install -U kitbag",
               file=sys.stderr)
+    return data
+
+def overlay_path():
+    """Personal overlay manifest path, or None. Precedence: explicit --manifest
+    (BUNDLES) > $KITBAG_MANIFEST > ~/.config/kitbag/bundles.yaml (if it exists)."""
+    if BUNDLES is not None:
+        return Path(BUNDLES).expanduser()
+    env = os.environ.get("KITBAG_MANIFEST")
+    if env:
+        return Path(env).expanduser()
+    p = HOME / ".config/kitbag/bundles.yaml"
+    return p if p.exists() else None
+
+def manifest_desc():
+    """Human description of the active manifest layer(s), for headers/messages."""
+    ov = overlay_path()
+    if ov is None:
+        return str(PACKAGED)
+    try:
+        isolated = _read_manifest(ov).get("extends_defaults") is False
+    except SystemExit:
+        isolated = False
+    return str(ov) if isolated else f"{PACKAGED.name} + {ov}"
+
+def _merge_manifests(base, overlay):
+    """Overlay's bundles & mcp_servers win by name; base supplies the rest."""
+    out = dict(base)
+    out["bundles"] = {**base.get("bundles", {}), **overlay.get("bundles", {})}
+    out["mcp_servers"] = {**base.get("mcp_servers", {}), **overlay.get("mcp_servers", {})}
+    out["schema"] = max(base.get("schema", SCHEMA), overlay.get("schema", SCHEMA))
+    return out
+
+def load_manifest():
+    global _manifest_cache
+    if _manifest_cache is not None: return _manifest_cache
+    base = _read_manifest(PACKAGED)
+    ov = overlay_path()
+    if ov is not None:
+        overlay = _read_manifest(ov)
+        data = overlay if overlay.get("extends_defaults") is False \
+            else _merge_manifests(base, overlay)
+    else:
+        data = base
     _manifest_cache = data
     return data
 
@@ -330,7 +378,7 @@ def _mcp_act(names, verb, dry, reg, scope="user"):
     for n in names:
         if verb == "add":
             d = reg.get(n) or die(f"unknown mcp server '{n}' — define it under "
-                                  f"mcp_servers in {BUNDLES}")
+                                  f"mcp_servers in {overlay_path() or PACKAGED}")
             argv = mcp_add_argv(n, d, scope)
         else:
             argv = ["claude", "mcp", "remove", "-s", scope, n]
@@ -341,7 +389,7 @@ def _mcp_tag(name, configured): return f"{GRN}●{RST}" if name in configured el
 
 def cmd_mcp_list(cat, a):
     reg, configured = mcp_registry(), configured_mcp_names()
-    print(f"{BOLD}MCP registry{RST}  {DIM}({len(reg)} defined in {BUNDLES.name}){RST}\n")
+    print(f"{BOLD}MCP registry{RST}  {DIM}({len(reg)} defined in {manifest_desc()}){RST}\n")
     for name, d in reg.items():
         t = (d.get("transport") or "stdio")
         target = d.get("url") or " ".join([d.get("command", "")] + list(d.get("args", [])))
@@ -365,7 +413,7 @@ def cmd_mcp_info(cat, a):
 def cmd_bundle_list(cat, a):
     bundles = load_bundles()
     configured = None
-    print(f"{BOLD}{len(bundles)} bundle(s){RST}  {DIM}from {BUNDLES}{RST}\n")
+    print(f"{BOLD}{len(bundles)} bundle(s){RST}  {DIM}from {manifest_desc()}{RST}\n")
     for name, b in bundles.items():
         res = resolve_bundle(bundles, name)
         np, nm = len(res["plugins"]), len(res["mcp"])

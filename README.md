@@ -28,7 +28,8 @@ python -m kitbag --help
 
 Requires: Python 3.8+, PyYAML, and the `claude` CLI. No other dependencies.
 
-Use a different manifest with `--manifest /path/to/file.yaml` or `$KITBAG_MANIFEST`.
+Add your own bundles in `~/.config/kitbag/bundles.yaml` (auto-layered on the
+built-ins) — see [Personal bundles](#personal-bundles-manifest-layering).
 
 ## Usage
 
@@ -112,7 +113,27 @@ unless `--yes`); `bundle show`/`diff` mark each present ●, missing ○, or rem
 `bundle remove` deletes the ones it can resolve. This makes `bundles.yaml` a single
 shareable manifest for a whole workflow — marketplace plugins **and** your own tools.
 
-Point the tool at a different manifest with `KITBAG_MANIFEST=/path/to/file.yaml`.
+### Personal bundles (manifest layering)
+
+Keep your own bundles out of the shipped manifest: put them in
+**`~/.config/kitbag/bundles.yaml`** and kitbag auto-layers them on top of the
+built-ins — you get the defaults **and** your bundles. A bundle/MCP server whose
+name matches a built-in overrides it.
+
+```yaml
+# ~/.config/kitbag/bundles.yaml
+schema: 1
+bundles:
+  my-sessions:
+    description: My own skills, pulled over git
+    local:
+      - source: me/my-skills-repo
+        path: skills/session-start
+```
+
+Overlay precedence: `--manifest <file>` › `$KITBAG_MANIFEST` › `~/.config/kitbag/bundles.yaml`.
+`kitbag bundle list` shows which layers are active. To ignore the built-ins entirely,
+put `extends_defaults: false` at the top of your manifest.
 
 ## Generate a marketplace (single source)
 

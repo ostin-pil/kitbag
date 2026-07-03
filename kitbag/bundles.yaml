@@ -120,25 +120,6 @@ bundles:
     description: "Example 'curator' bundle — opinionated minimalist picks"
     plugins: [superpowers, context7, code-review, skill-creator, pyright-lsp, typescript-lsp]
 
-  # ---- personal: my own skills, pulled from a (private) git repo ------------
-  # Demonstrates a bundle of local artifacts fetched over git. These paths point
-  # at github.com/ostin-pil/claude-plugins; cloning a private repo works because
-  # kitbag routes github auth through `gh`. Fork the paths to your own repo.
-  my-sessions:
-    description: "My session-lifecycle & knowledge skills (from ostin-pil/claude-plugins)"
-    local:
-      - source: ostin-pil/claude-plugins
-        path: lifecycle-kit/skills/session-start
-        scope: user
-      - source: ostin-pil/claude-plugins
-        path: lifecycle-kit/skills/session-report
-        scope: user
-      - source: ostin-pil/claude-plugins
-        path: lifecycle-kit/skills/session-end
-        scope: user
-      - source: ostin-pil/claude-plugins
-        path: knowledge-kit/skills/knowledge-audit
-        scope: user
-      - source: ostin-pil/claude-plugins
-        path: prose-mint/plugin/skills/prose-check
-        scope: user
+  # Personal bundles live OUTSIDE this shipped manifest — put them in
+  # ~/.config/kitbag/bundles.yaml (auto-layered on top of these defaults) or a
+  # file pointed to by $KITBAG_MANIFEST. See the "Personal bundles" README section.

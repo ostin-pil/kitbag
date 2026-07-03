@@ -81,9 +81,8 @@ def fake_home(tmp_path, monkeypatch):
 def run_cli(argv, *, manifest=None):
     """Parse argv, build the catalog (unless the command opts out), invoke the
     command, and return (exit_code, stdout). SystemExit is captured."""
-    if manifest is not None:
-        cli.BUNDLES = manifest
-        cli._manifest_cache = None
+    cli.BUNDLES = manifest      # None -> auto-detect (no overlay under the tmp HOME)
+    cli._manifest_cache = None
     args = cli.build_parser().parse_args(argv)
     cat = cli.Catalog() if getattr(args, "needs_catalog", True) else None
     buf = io.StringIO()

@@ -94,6 +94,7 @@ def manifest(tmp_path):
     p = tmp_path / "bundles.yaml"
     p.write_text(
         "schema: 1\n"
+        "extends_defaults: false\n"           # isolate from packaged base
         "bundles:\n"
         "  demo:\n"
         "    description: demo\n"
@@ -130,6 +131,7 @@ def mcp_manifest(tmp_path):
     p = tmp_path / "mcp.yaml"
     p.write_text(
         "schema: 1\n"
+        "extends_defaults: false\n"
         "mcp_servers:\n"
         "  sentry:\n"
         "    transport: http\n"
@@ -243,3 +245,43 @@ def test_local_remove_deletes(local_skill):
 def test_local_remove_unknown_errors(fake_home):
     code, _ = run_cli(["local", "remove", "skill", "ghost"])
     assert code == 1
+
+
+# ---- manifest layering (personal overlay on the packaged base) --------------
+def test_overlay_merges_onto_packaged_base(fake_home, tmp_path):
+    # a personal overlay adds a bundle; built-in bundles remain visible
+    p = tmp_path / "personal.yaml"
+    p.write_text("schema: 1\nbundles:\n  mine:\n    description: my own\n"
+                 "    plugins: [figma]\n")
+    code, out = run_cli(["bundle", "list"], manifest=p)
+    assert code == 0
+    assert "mine" in out          # personal bundle
+    assert "essentials" in out    # built-in from packaged base still present
+
+
+def test_overlay_extends_defaults_false_replaces(fake_home, tmp_path):
+    p = tmp_path / "only.yaml"
+    p.write_text("schema: 1\nextends_defaults: false\nbundles:\n"
+                 "  mine:\n    description: solo\n    plugins: [figma]\n")
+    code, out = run_cli(["bundle", "list"], manifest=p)
+    assert code == 0 and "mine" in out
+    assert "essentials" not in out   # base replaced
+
+
+def test_overlay_bundle_overrides_base_by_name(fake_home, tmp_path):
+    p = tmp_path / "override.yaml"
+    p.write_text("schema: 1\nbundles:\n  essentials:\n"
+                 "    description: MY OVERRIDDEN ESSENTIALS\n    plugins: [figma]\n")
+    code, out = run_cli(["bundle", "show", "essentials"], manifest=p)
+    assert code == 0 and "MY OVERRIDDEN ESSENTIALS" in out
+
+
+def test_merge_manifests_unit():
+    base = {"schema": 1, "bundles": {"a": {"x": 1}, "b": {"x": 2}},
+            "mcp_servers": {"s1": {}}}
+    overlay = {"schema": 1, "bundles": {"b": {"x": 99}, "c": {"x": 3}},
+               "mcp_servers": {"s2": {}}}
+    merged = cli._merge_manifests(base, overlay)
+    assert set(merged["bundles"]) == {"a", "b", "c"}
+    assert merged["bundles"]["b"]["x"] == 99          # overlay wins
+    assert set(merged["mcp_servers"]) == {"s1", "s2"}
