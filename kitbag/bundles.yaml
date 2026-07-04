@@ -30,6 +30,18 @@ mcp_servers:
   #   args: ["-y", "@scope/my-mcp"]
   #   env: ["API_KEY=replace-me"]
 
+# Git plugin marketplaces — install WHOLE plugins from any git repo (not just the
+# official catalog). Register a name -> source here, then reference plugins in a
+# bundle as `plugin@<name>`. kitbag adds the marketplace (via Claude Code) before
+# installing. The name must match the marketplace.json `name` in the repo.
+#   marketplaces:
+#     ostin-pil-plugins:
+#       source: ostin-pil/claude-plugins    # owner/repo, URL, or local path
+#       # sparse: [.claude-plugin, lifecycle-kit]   # optional monorepo checkout
+#   bundles:
+#     my-lifecycle:
+#       plugins: [lifecycle-kit@ostin-pil-plugins, knowledge-kit@ostin-pil-plugins]
+
 bundles:
   # A bundle may also carry `local:` — your own skills/commands/agents/output-styles,
   # installed alongside plugins & MCP by `kitbag bundle install`. Each entry is a

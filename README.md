@@ -135,6 +135,37 @@ Overlay precedence: `--manifest <file>` › `$KITBAG_MANIFEST` › `~/.config/ki
 `kitbag bundle list` shows which layers are active. To ignore the built-ins entirely,
 put `extends_defaults: false` at the top of your manifest.
 
+## Git marketplaces (install whole plugins from any repo)
+
+The catalog only knows the official marketplace. To install a **whole plugin**
+(skills + commands + hooks + templates — full fidelity) from any git repo, kitbag
+drives Claude Code's own marketplace machinery:
+
+```bash
+kitbag market add ostin-pil/claude-plugins          # owner/repo, URL, or path
+kitbag market list                                  # registered + manifest-declared
+kitbag install lifecycle-kit@ostin-pil-plugins      # plugin@marketplace
+kitbag market remove ostin-pil-plugins
+```
+
+Declare marketplaces in the manifest so bundles can pull plugins from them — kitbag
+adds the marketplace (if missing) before installing:
+
+```yaml
+marketplaces:
+  ostin-pil-plugins:
+    source: ostin-pil/claude-plugins        # owner/repo, URL, or path
+    # sparse: [.claude-plugin, lifecycle-kit]   # optional monorepo checkout
+bundles:
+  my-lifecycle:
+    plugins: [lifecycle-kit@ostin-pil-plugins, knowledge-kit@ostin-pil-plugins]
+```
+
+The `@marketplace` name must match the `name` in the repo's `marketplace.json`.
+Standalone `local:` skills (above) vs. `@marketplace` plugins are the two ways to
+get someone's work: a single skill copied in, or the whole plugin managed by
+Claude Code. `kitbag local add` warns when you copy a skill that's part of a plugin.
+
 ## Generate a marketplace (single source)
 
 `bundles.yaml` is the single source of truth; kitbag can derive a distributable

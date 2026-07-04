@@ -276,6 +276,87 @@ def test_overlay_bundle_overrides_base_by_name(fake_home, tmp_path):
     assert code == 0 and "MY OVERRIDDEN ESSENTIALS" in out
 
 
+# ---- git marketplaces (install whole plugins from any repo) -----------------
+def test_split_market():
+    assert cli.split_market("lifecycle-kit@ostin-pil-plugins") == \
+        ("lifecycle-kit", "ostin-pil-plugins")
+    assert cli.split_market("code-review") == ("code-review", None)
+
+
+def test_market_add_argv():
+    argv = cli.market_add_argv("mp", {"source": "o/r", "sparse": [".claude-plugin", "p"]})
+    assert argv == ["claude", "plugin", "marketplace", "add", "o/r",
+                    "--sparse", ".claude-plugin", "p"]
+    argv2 = cli.market_add_argv("mp", {"source": "o/r", "scope": "project"})
+    assert "--scope" in argv2 and "project" in argv2
+
+
+@pytest.fixture
+def market_manifest(tmp_path):
+    p = tmp_path / "mk.yaml"
+    p.write_text(
+        "schema: 1\n"
+        "extends_defaults: false\n"
+        "marketplaces:\n"
+        "  mine:\n"
+        "    source: me/plugins-repo\n"
+        "bundles:\n"
+        "  kit:\n"
+        "    description: my git-marketplace plugins\n"
+        "    plugins: [lifecycle-kit@mine, code-review]\n"  # one market, one catalog
+    )
+    return p
+
+
+def test_market_list_shows_registered_and_manifest(fake_home, market_manifest):
+    code, out = run_cli(["market", "list"], manifest=market_manifest)
+    assert code == 0
+    assert "claude-plugins-official" in out   # registered (from fake_home)
+    assert "mine" in out                       # manifest registry, not yet added
+
+
+def test_market_add_from_manifest_registry_name(fake_home, market_manifest):
+    code, out = run_cli(["market", "add", "mine", "--dry-run"], manifest=market_manifest)
+    assert code == 0
+    assert "claude plugin marketplace add me/plugins-repo" in out
+
+
+def test_market_add_direct_source(fake_home):
+    code, out = run_cli(["market", "add", "owner/repo", "--dry-run"])
+    assert "claude plugin marketplace add owner/repo" in out
+
+
+def test_install_market_ref_adds_marketplace_then_installs(fake_home, market_manifest):
+    code, out = run_cli(["install", "lifecycle-kit@mine", "--dry-run"],
+                        manifest=market_manifest)
+    assert code == 0
+    assert "claude plugin marketplace add me/plugins-repo" in out   # auto-add
+    assert "claude plugin install lifecycle-kit@mine --scope user" in out
+
+
+def test_install_market_ref_unknown_marketplace_errors(fake_home):
+    code, _ = run_cli(["install", "x@ghostmarket", "--dry-run"])
+    assert code == 1   # not registered, not in manifest registry
+
+
+def test_bundle_install_routes_market_and_catalog(fake_home, market_manifest):
+    code, out = run_cli(["bundle", "install", "kit", "--dry-run"],
+                        manifest=market_manifest)
+    assert code == 0
+    # market plugin -> add marketplace + install @mine
+    assert "marketplace add me/plugins-repo" in out
+    assert "install lifecycle-kit@mine" in out
+    # catalog plugin code-review is already installed in fake_home -> skipped
+    assert "install code-review@" not in out
+
+
+def test_bundle_show_lists_market_plugins(fake_home, market_manifest):
+    code, out = run_cli(["bundle", "show", "kit"], manifest=market_manifest)
+    assert code == 0
+    assert "lifecycle-kit" in out and "@mine" in out
+    assert "marketplace plugins" in out
+
+
 def test_merge_manifests_unit():
     base = {"schema": 1, "bundles": {"a": {"x": 1}, "b": {"x": 2}},
             "mcp_servers": {"s1": {}}}

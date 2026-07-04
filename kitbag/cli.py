@@ -16,6 +16,7 @@ HOME = Path.home()
 CATALOG = HOME / ".claude/plugins/plugin-catalog-cache.json"
 SETTINGS = HOME / ".claude/settings.json"
 INSTALLED = HOME / ".claude/plugins/installed_plugins.json"
+KNOWN_MARKETS = HOME / ".claude/plugins/known_marketplaces.json"
 DEFAULT_MARKET = "claude-plugins-official"
 PACKAGED = Path(__file__).resolve().parent / "bundles.yaml"   # built-in base layer
 BUNDLES = None   # explicit overlay path (set by --manifest); None = auto-detect
@@ -180,7 +181,39 @@ def _act(cat, names, verb, dry, note=True):
         print(f"\n{DIM}you may need /reload-plugins (or restart) for changes to load.{RST}")
     return rc
 
-def cmd_install(cat, a): sys.exit(_act(cat, a.names, "install", a.dry_run))
+def _ensure_market(market, reg, dry, _added=None):
+    """Ensure a git marketplace is registered with Claude Code, adding it from
+    the manifest `marketplaces:` registry when it isn't. Returns rc."""
+    if (_added and market in _added) or market in registered_marketplaces():
+        return 0
+    defn = reg.get(market)
+    if not defn:
+        die(f"marketplace '{market}' isn't registered and isn't in the manifest "
+            f"`marketplaces:` registry — add it first: kitbag market add <source>")
+    rc = _run(market_add_argv(market, defn), dry)
+    if _added is not None: _added.add(market)
+    return rc
+
+def _install_market_refs(refs, reg, dry, note=True):
+    """Install plugins written as name@marketplace, adding marketplaces as needed."""
+    rc, added = 0, set()
+    for ref in refs:
+        name, market = split_market(ref)
+        if not market:
+            die(f"'{ref}' has no @marketplace; use a catalog name or name@marketplace")
+        rc |= _ensure_market(market, reg, dry, _added=added)
+        rc |= _run(["claude", "plugin", "install", f"{name}@{market}", "--scope", "user"], dry)
+    if note and not dry:
+        print(f"\n{DIM}you may need /reload-plugins (or restart) for changes to load.{RST}")
+    return rc
+
+def cmd_install(cat, a):
+    cat_refs = [n for n in a.names if "@" not in n]
+    mkt_refs = [n for n in a.names if "@" in n]
+    rc = 0
+    if cat_refs: rc |= _act(cat, cat_refs, "install", a.dry_run, note=not mkt_refs)
+    if mkt_refs: rc |= _install_market_refs(mkt_refs, market_registry(), a.dry_run)
+    sys.exit(rc)
 def cmd_remove(cat, a):  sys.exit(_act(cat, a.names, "uninstall", a.dry_run))
 def cmd_enable(cat, a):  sys.exit(_act(cat, a.names, "enable", a.dry_run))
 def cmd_disable(cat, a): sys.exit(_act(cat, a.names, "disable", a.dry_run))
@@ -262,6 +295,7 @@ def _merge_manifests(base, overlay):
     out = dict(base)
     out["bundles"] = {**base.get("bundles", {}), **overlay.get("bundles", {})}
     out["mcp_servers"] = {**base.get("mcp_servers", {}), **overlay.get("mcp_servers", {})}
+    out["marketplaces"] = {**base.get("marketplaces", {}), **overlay.get("marketplaces", {})}
     out["schema"] = max(base.get("schema", SCHEMA), overlay.get("schema", SCHEMA))
     return out
 
@@ -280,6 +314,32 @@ def load_manifest():
     return data
 
 def load_bundles(): return load_manifest().get("bundles", {})
+def market_registry(): return load_manifest().get("marketplaces", {})
+
+def split_market(ref):
+    """'lifecycle-kit@ostin-pil-plugins' -> ('lifecycle-kit', 'ostin-pil-plugins');
+    'code-review' -> ('code-review', None). The '@<marketplace>' suffix marks a
+    plugin that comes from a git marketplace rather than the official catalog."""
+    if "@" in ref:
+        name, market = ref.rsplit("@", 1)
+        return name, (market or None)
+    return ref, None
+
+def registered_marketplaces():
+    """Names of marketplaces already registered with Claude Code."""
+    return set(load_json(KNOWN_MARKETS, {}).keys())
+
+def market_add_argv(name, defn, scope=None):
+    """Build the `claude plugin marketplace add` argv for a registry entry."""
+    src = defn.get("source") if isinstance(defn, dict) else defn
+    if not src:
+        die(f"marketplace '{name}' has no 'source' in the manifest registry")
+    argv = ["claude", "plugin", "marketplace", "add", src]
+    sc = (defn.get("scope") if isinstance(defn, dict) else None) or scope
+    if sc: argv += ["--scope", sc]
+    if isinstance(defn, dict) and defn.get("sparse"):
+        argv += ["--sparse", *defn["sparse"]]
+    return argv
 def mcp_registry(): return load_manifest().get("mcp_servers", {})
 
 def resolve_bundle(bundles, name, seen=None):
@@ -409,6 +469,36 @@ def cmd_mcp_info(cat, a):
     for k, v in d.items(): print(f"  {DIM}{k}:{RST} {v}")
     print(f"\n{DIM}would run:{RST} {' '.join(mcp_add_argv(a.name, d, a.scope if hasattr(a,'scope') else 'user'))}")
 
+# ---- marketplaces (install whole plugins from any git repo) -----------------
+def cmd_market_list(cat, a):
+    reg = market_registry()
+    registered = load_json(KNOWN_MARKETS, {})
+    print(f"{BOLD}marketplaces{RST}  {DIM}({len(registered)} registered with Claude Code){RST}\n")
+    for name, d in registered.items():
+        src = d.get("source", {})
+        where = src.get("repo") or src.get("source") or src if isinstance(src, dict) else src
+        print(f" {GRN}●{RST} {BOLD}{name:<24}{RST} {DIM}{where}{RST}")
+    extra = [(n, d) for n, d in reg.items() if n not in registered]
+    if extra:
+        print(f"\n {DIM}in manifest registry, not yet added:{RST}")
+        for n, d in extra:
+            print(f" {DIM}○{RST} {BOLD}{n:<24}{RST} {DIM}{(d or {}).get('source','')}{RST}")
+    print(f"\n{DIM}● registered  ○ known   add: kitbag market add <owner/repo|url|path>{RST}")
+
+def cmd_market_add(cat, a):
+    # a source may be given directly, or a registry name to add from the manifest
+    reg = market_registry()
+    if a.source in reg and "/" not in a.source and not a.source.startswith(("http", ".", "/")):
+        argv = market_add_argv(a.source, reg[a.source], a.scope)
+    else:
+        argv = ["claude", "plugin", "marketplace", "add", a.source]
+        if a.scope: argv += ["--scope", a.scope]
+        if a.sparse: argv += ["--sparse", *a.sparse]
+    sys.exit(_run(argv, a.dry_run))
+
+def cmd_market_remove(cat, a):
+    sys.exit(_run(["claude", "plugin", "marketplace", "remove", a.name], a.dry_run))
+
 # ---- bundles -----------------------------------------------------------------
 def cmd_bundle_list(cat, a):
     bundles = load_bundles()
@@ -432,10 +522,20 @@ def cmd_bundle_show(cat, a):
     print(f"{BOLD}{a.name}{RST}  {DIM}{b.get('description','')}{RST}")
     if b.get("include"): print(f"  {DIM}includes:{RST} {', '.join(b['include'])}")
     print()
-    recs = [cat.get(p) for p in res["plugins"]]
-    missing = [p for p, r in zip(res["plugins"], recs) if r is None]
+    cat_refs = [p for p in res["plugins"] if "@" not in p]
+    mkt_refs = [p for p in res["plugins"] if "@" in p]
+    recs = [cat.get(p) for p in cat_refs]
+    missing = [p for p, r in zip(cat_refs, recs) if r is None]
     print_rows(cat, [r for r in recs if r])
     if missing: print(f" {RED}not in catalog:{RST} {', '.join(missing)}")
+    if mkt_refs:
+        registered = registered_marketplaces()
+        print(f"\n {DIM}marketplace plugins:{RST}")
+        for ref in mkt_refs:
+            name, market = split_market(ref)
+            tag = GRN + "●" + RST if cat.is_installed(name) else DIM + "○" + RST
+            reg_tag = "" if market in registered else f"  {DIM}(marketplace not added yet){RST}"
+            print(f" {tag} {BOLD}{name:<20}{RST} {DIM}@{market}{RST}{reg_tag}")
     if res["mcp"]:
         reg, configured = mcp_registry(), configured_mcp_names()
         print(f"\n {DIM}MCP servers:{RST}")
@@ -457,8 +557,10 @@ def cmd_bundle_show(cat, a):
 def cmd_bundle_diff(cat, a):
     bundles = load_bundles()
     res = resolve_bundle(bundles, a.name)
-    miss_p = [p for p in res["plugins"] if not cat.is_installed(p)]
-    have_p = [p for p in res["plugins"] if cat.is_installed(p)]
+    # market refs (name@marketplace) check installed by short name
+    _short = lambda p: split_market(p)[0]
+    miss_p = [p for p in res["plugins"] if not cat.is_installed(_short(p))]
+    have_p = [p for p in res["plugins"] if cat.is_installed(_short(p))]
     print(f"{BOLD}bundle {a.name}{RST} vs current state:")
     print(f"  {GRN}plugins installed:{RST} {', '.join(have_p) or '—'}")
     print(f"  {YEL}plugins missing:{RST}   {', '.join(miss_p) or '— (all installed)'}")
@@ -490,17 +592,25 @@ def cmd_bundle_install(cat, a):
     res = resolve_bundle(bundles, a.name)
     specs = resolve_local(bundles, a.name)
     reg, configured = mcp_registry(), configured_mcp_names()
-    todo_p = res["plugins"] if a.force else [p for p in res["plugins"] if not cat.is_installed(p)]
+    mreg = market_registry()
+    cat_refs = [p for p in res["plugins"] if "@" not in p]
+    mkt_refs = [p for p in res["plugins"] if "@" in p]
+    todo_p = cat_refs if a.force else [p for p in cat_refs if not cat.is_installed(p)]
+    todo_k = mkt_refs if a.force else [p for p in mkt_refs
+                                       if not cat.is_installed(split_market(p)[0])]
     todo_m = res["mcp"] if a.force else [m for m in res["mcp"] if m not in configured]
-    if not todo_p and not todo_m and not specs:
+    if not todo_p and not todo_k and not todo_m and not specs:
         print(f"{GRN}bundle '{a.name}' already fully applied.{RST}"); return
     print(f"{BOLD}installing bundle '{a.name}'{RST}")
-    if todo_p: print(f"  plugins: {', '.join(todo_p)}")
-    if todo_m: print(f"  mcp:     {', '.join(todo_m)}")
-    if specs:  print(f"  local:   {', '.join(_spec_label(s) for s in specs)}")
+    if todo_p: print(f"  plugins:  {', '.join(todo_p)}")
+    if todo_k: print(f"  market:   {', '.join(todo_k)}")
+    if todo_m: print(f"  mcp:      {', '.join(todo_m)}")
+    if specs:  print(f"  local:    {', '.join(_spec_label(s) for s in specs)}")
     print()
     rc = 0
-    if todo_p: rc |= _act(cat, todo_p, "install", a.dry_run, note=not todo_m and not specs)
+    _more = todo_k or todo_m or specs
+    if todo_p: rc |= _act(cat, todo_p, "install", a.dry_run, note=not _more)
+    if todo_k: rc |= _install_market_refs(todo_k, mreg, a.dry_run, note=not (todo_m or specs))
     if todo_m: rc |= _mcp_act(todo_m, "add", a.dry_run, reg)
     if specs:
         remote = [s for s in specs if _local.parse_source(s["source"]).kind != "local"]
@@ -775,6 +885,16 @@ def build_parser():
     x = m.add_parser("remove", help="remove configured MCP server(s)"); x.add_argument("names", nargs="+")
     x.add_argument("--scope", choices=["local", "user", "project"], default="user")
     x.add_argument("--dry-run", action="store_true"); x.set_defaults(fn=cmd_mcp_remove)
+
+    k = sub.add_parser("market", help="git plugin marketplaces (add & install whole plugins)").add_subparsers(dest="kcmd", required=True)
+    k.add_parser("list", help="list registered + manifest marketplaces").set_defaults(fn=cmd_market_list, needs_catalog=False)
+    x = k.add_parser("add", help="add a marketplace (owner/repo, URL, path, or a manifest registry name)")
+    x.add_argument("source")
+    x.add_argument("--scope", choices=["local", "user", "project"], default="user")
+    x.add_argument("--sparse", nargs="+", help="limit checkout to these dirs (monorepos)")
+    x.add_argument("--dry-run", action="store_true"); x.set_defaults(fn=cmd_market_add, needs_catalog=False)
+    x = k.add_parser("remove", help="remove a registered marketplace"); x.add_argument("name")
+    x.add_argument("--dry-run", action="store_true"); x.set_defaults(fn=cmd_market_remove, needs_catalog=False)
 
     b = sub.add_parser("bundle", help="curated workflow bundles").add_subparsers(dest="bcmd", required=True)
     b.add_parser("list", help="list bundles").set_defaults(fn=cmd_bundle_list)
