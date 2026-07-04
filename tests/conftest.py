@@ -66,11 +66,16 @@ def fake_home(tmp_path, monkeypatch):
         "code-review@claude-plugins-official": [{"scope": "user"}],
         "typescript-lsp@claude-plugins-official": [{"scope": "user"}],
     }}))
+    (claude / "plugins/known_marketplaces.json").write_text(json.dumps({
+        "claude-plugins-official": {
+            "source": {"source": "github", "repo": "anthropics/claude-plugins-official"}},
+    }))
 
     monkeypatch.setattr(cli, "HOME", tmp_path)
     monkeypatch.setattr(cli, "CATALOG", claude / "plugins/plugin-catalog-cache.json")
     monkeypatch.setattr(cli, "SETTINGS", claude / "settings.json")
     monkeypatch.setattr(cli, "INSTALLED", claude / "plugins/installed_plugins.json")
+    monkeypatch.setattr(cli, "KNOWN_MARKETS", claude / "plugins/known_marketplaces.json")
     # no MCP servers configured by default; never shell out to real `claude`
     monkeypatch.setattr(cli, "configured_mcp_names", lambda: set())
     cli._manifest_cache = None
