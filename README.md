@@ -17,16 +17,25 @@ fork it, edit it, pass it around.
 ## Install
 
 ```bash
-# from a checkout
-pipx install .            # or: uv tool install .
-# editable, for hacking on it
-pip install -e .
+# straight from GitHub, no checkout needed
+uv tool install git+https://github.com/ostin-pil/kitbag
+# or: pipx install git+https://github.com/ostin-pil/kitbag
 
-# run without installing
-python -m kitbag --help
+kitbag --help
+```
+
+Working on kitbag itself, from a checkout:
+
+```bash
+pipx install .            # or: uv tool install .
+pip install -e .          # editable, for hacking on it
+python -m kitbag --help   # run without installing
 ```
 
 Requires: Python 3.8+, PyYAML, and the `claude` CLI. No other dependencies.
+
+> Not on PyPI: the name there belongs to an unrelated project, so install from git as
+> above. The `kitbag` command is the same either way.
 
 Add your own bundles in `~/.config/kitbag/bundles.yaml` (auto-layered on the
 built-ins) — see [Personal bundles](#personal-bundles-manifest-layering).
